@@ -57,7 +57,7 @@ class QueryHandler(BaseHandler):
         if not all_files:
             return []
 
-        titles = [self._get_clean_title(f) + f" (path: {f})" for f in all_files]
+        titles = [self._get_clean_title(f) + f" (path: {f})" for f in all_files]  # Include path for uniqueness
         titles_str = "\n".join(titles)
 
         prompt = f"Given the user's query: '{query}' and this list of document titles and paths:\n{titles_str}\n\nSelect up to 5 most relevant file paths. Output only the paths, one per line, no explanations."
