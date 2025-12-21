@@ -7,6 +7,7 @@ from src.core.config import S3_BUCKET_NAME
 from src.core.logger import logger
 import re
 from datetime import datetime
+import time  # For short delay
 
 class DocumentsHandler(BaseHandler):
     priority = 80  # Lower than menu (100), but higher than others
@@ -146,6 +147,8 @@ class DocumentsHandler(BaseHandler):
             else:
                 logger.error(f"Failed to send PDF {filename} to {sender_id}")
                 send_whatsapp_text(sender_id, "Error sending file. Try again.")
+            # Short delay to help sequencing
+            time.sleep(2)
         else:
             send_whatsapp_text(sender_id, "File not found. Contact HR.")
         # Send feedback after action complete
@@ -220,6 +223,7 @@ class DocumentsHandler(BaseHandler):
                 url = get_pdf_url(file)
                 if url:
                     send_whatsapp_pdf(sender_id, url, filename, caption=f"Your {filename}")
+                    time.sleep(2)  # Delay per file for sequencing
                     sent_count += 1
             if sent_count > 0:
                 self._send_feedback(sender_id, company_id)
