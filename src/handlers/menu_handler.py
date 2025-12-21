@@ -40,8 +40,8 @@ class MenuHandler(BaseHandler):
     def _send_main_menu(self, sender_id: str, company_id: str):
         buttons = [
             {"type": "reply", "reply": {"id": "docs_btn", "title": "Documents 📄"}},
-            {"type": "reply", "reply": {"id": "leave_btn", "title": "Take Leave 🌴"}},
-            {"type": "reply", "reply": {"id": "sop_btn", "title": "SOP Training 🎓"}}
+            {"type": "reply", "reply": {"id": "apps_btn", "title": "My Apps"}},
+            {"type": "reply", "reply": {"id": "hr_btn", "title": "Talk to HR"}}
         ]
         text = "Main Menu (づ๑•ᴗ•๑)づ✨"
         success = send_whatsapp_buttons(sender_id, text, buttons)
@@ -50,12 +50,34 @@ class MenuHandler(BaseHandler):
         else:
             logger.error(f"Failed to send main menu to {sender_id}")
 
+    def _send_apps_menu(self, sender_id: str, company_id: str):
+        buttons = [
+            {"type": "reply", "reply": {"id": "leave_btn", "title": "Take Leave 🌴"}},
+            {"type": "reply", "reply": {"id": "sop_btn", "title": "Train SOP 🎓"}},
+            {"type": "reply", "reply": {"id": "placeholder_btn", "title": "More Apps 🚀 Coming Soon"}}
+        ]
+        text = "My Apps Menu"
+        success = send_whatsapp_buttons(sender_id, text, buttons)
+        if success:
+            logger.info(f"Apps menu sent to {sender_id}")
+        else:
+            logger.error(f"Failed to send apps menu to {sender_id}")
+
     def try_process_interactive(self, sender_id: str, company_id: str, interactive_data: dict) -> bool:
         if interactive_data.get('type') != 'button_reply':
             return False
         button_id = interactive_data['button_reply']['id']
         if button_id == "main_menu_btn":
             self._send_main_menu(sender_id, company_id)
+            return True
+        if button_id == "apps_btn":
+            self._send_apps_menu(sender_id, company_id)
+            return True
+        if button_id == "hr_btn":
+            send_whatsapp_text(sender_id, "Talk to HR coming soon!")
+            return True
+        if button_id == "placeholder_btn":
+            send_whatsapp_text(sender_id, "More Apps coming soon!")
             return True
         # We don't handle other buttons here yet - other handlers will
         return False
