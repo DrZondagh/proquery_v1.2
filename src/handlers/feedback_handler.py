@@ -42,7 +42,7 @@ class FeedbackHandler(BaseHandler):
                 pending['comment'] = text
                 set_pending_feedback(sender_id, company_id, pending)
             send_feedback_email(sender_id, False, pending['query'], pending['answer'], pending.get('comment'))
-            send_whatsapp_text(sender_id, "Feedback noted. Thanks!")
+            send_whatsapp_text(sender_id, ';Feedback noted. Thank you for the feedback!! Type "Hi" for Main menu!')
             clear_pending_feedback(sender_id, company_id)
             if 'context' in state:
                 del state['context']
