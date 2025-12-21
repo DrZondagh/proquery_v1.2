@@ -125,6 +125,12 @@ class DocumentsHandler(BaseHandler):
             self._send_feedback(sender_id, company_id)
             return
 
+        # If only one file, send it directly without list
+        if len(files) == 1:
+            filename = files[0].split('/')[-1]
+            self._send_document(sender_id, company_id, filename)
+            return
+
         # Split into multiple sections if >10 files (WhatsApp max 10 rows/section, up to 10 sections)
         sections = []
         chunk_size = 10
