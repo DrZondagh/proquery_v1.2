@@ -3,6 +3,7 @@ from src.core.base_handler import BaseHandler
 from src.core.whatsapp_handler import send_whatsapp_list, send_whatsapp_pdf, send_whatsapp_text
 from src.core.s3_handler import get_pdf_url
 from src.core.db_handler import get_s3_client
+from src.core.config import S3_BUCKET_NAME
 from src.core.logger import logger
 
 class DocumentsHandler(BaseHandler):
@@ -28,19 +29,19 @@ class DocumentsHandler(BaseHandler):
         for file in files:
             filename = file.split('/')[-1]
             if 'Job_Description' in filename:
-                categorized['Job Description 📋'].append(filename)
+                categorized['Job Description 📋'].append(file)  # Use full key for sending
             elif 'Payslip' in filename:
-                categorized['Payslips 💰'].append(filename)
+                categorized['Payslips 💰'].append(file)
             elif 'Handbook' in filename:
-                categorized['Employee Handbook 📖'].append(filename)
+                categorized['Employee Handbook 📖'].append(file)
             elif 'Review' in filename:
-                categorized['Performance Reviews ⭐'].append(filename)
+                categorized['Performance Reviews ⭐'].append(file)
             elif 'Benefits' in filename:
-                categorized['Benefits Guide 🎁'].append(filename)
+                categorized['Benefits Guide 🎁'].append(file)
             elif 'Warning' in filename:
-                categorized['Warning Letters ⚠️'].append(filename)
+                categorized['Warning Letters ⚠️'].append(file)
             else:
-                categorized['Other'].append(filename)
+                categorized['Other'].append(file)
         return categorized
 
     def _send_documents_menu(self, sender_id: str, company_id: str):
@@ -52,7 +53,7 @@ class DocumentsHandler(BaseHandler):
         sections = [{"title": "Document Types", "rows": []}]
         for category, files in categorized.items():
             if files:
-                row_id = f"doc_type_{category.split(' ')[0].lower()}"
+                row_id = f"doc_type_{category.split(' ')[0].lower()}"  # e.g., doc_type_payslips
                 sections[0]["rows"].append({
                     "id": row_id,
                     "title": category,
@@ -86,11 +87,12 @@ class DocumentsHandler(BaseHandler):
             return
 
         sections = [{"title": doc_type, "rows": []}]
-        for filename in files:
+        for file in files:
+            filename = file.split('/')[-1]
             row_id = f"doc_file_{filename}"
             sections[0]["rows"].append({
                 "id": row_id,
-                "title": filename[:24],
+                "title": filename[:24],  # Truncate for WhatsApp limit
                 "description": "Tap to download"
             })
 
@@ -131,8 +133,8 @@ class DocumentsHandler(BaseHandler):
                 send_whatsapp_text(sender_id, "Query like 'recruitment policy' for details!")
                 return True  # Routes to SOP module later
             elif reply_id.startswith('doc_type_'):
-                doc_type = ' '.join(reply_id.split('_')[2:]) + ' ' + interactive_data['list_reply']['title'].split(' ')[1]  # Reconstruct category
-                self._send_documents_by_type(sender_id, company_id, doc_type)
+                doc_type_key = interactive_data['list_reply']['title']  # Use the full title directly, e.g., 'Payslips 💰'
+                self._send_documents_by_type(sender_id, company_id, doc_type_key)
                 return True
             elif reply_id.startswith('doc_file_'):
                 filename = reply_id[9:]
@@ -148,11 +150,20 @@ class DocumentsHandler(BaseHandler):
         # Handle specific queries like "payslips dec"
         if 'payslips' in lowered:
             month = lowered.split('payslips')[-1].strip()  # e.g., "dec"
+            categorized = self._get_user_documents(sender_id, company_id)
+            files = categorized['Payslips 💰']
             if month:
-                # Filter logic (future: fuzzy date match)
-                send_whatsapp_text(sender_id, f"Filtered payslips for {month} - sending...")
-            else:
-                self._send_documents_by_type(sender_id, company_id, 'Payslips 💰')
+                # Simple filter: assume filenames like Jake_Zondagh_Payslip_Dec.pdf
+                filtered = [f for f in files if month.lower() in f.lower()]
+                if not filtered:
+                    send_whatsapp_text(sender_id, f"No payslips found for {month}.")
+                    return True
+                files = filtered
+            for file in files:
+                filename = file.split('/')[-1]
+                url = get_pdf_url(file)
+                if url:
+                    send_whatsapp_pdf(sender_id, url, filename, caption=f"Your {filename}")
             return True
-        # Similar for other types
+        # Similar for other types (expand as needed)
         return False
