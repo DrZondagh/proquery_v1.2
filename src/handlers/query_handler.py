@@ -1,5 +1,4 @@
 # src/handlers/query_handler.py
-import difflib
 import json
 import requests
 import re
@@ -53,34 +52,52 @@ class QueryHandler(BaseHandler):
             logger.error(f"Error loading content {filepath}: {e}")
             return ""
 
-    def _process_query(self, sender_id: str, company_id: str, query: str, only_sops: bool = False):
+    def _find_relevant_files(self, sender_id: str, company_id: str, query: str, only_sops: bool = False) -> list[str]:
         personal_files = self._get_personal_files(sender_id, company_id) if not only_sops else []
         sop_files = self._get_global_sop_files(company_id)
         all_files = personal_files + sop_files
         if not all_files:
-            send_whatsapp_text(sender_id, "No documents found.")
-            self._clear_context(sender_id, company_id)
-            self._send_feedback(sender_id, company_id)
-            return
+            return []
 
-        titles = [self._get_clean_title(f) for f in all_files]
-        close_matches = difflib.get_close_matches(query.lower(), titles, n=5, cutoff=0.5)  # Lower cutoff for broader match
+        titles = [self._get_clean_title(f) + f" (path: {f})" for f in all_files]  # Include path for uniqueness
+        titles_str = "\n".join(titles)
 
-        if not close_matches:
+        prompt = f"Given the user's query: '{query}' and this list of document titles and paths:\n{titles_str}\n\nSelect up to 5 most relevant file paths. Output only the paths, one per line, no explanations."
+
+        headers = {"Authorization": f"Bearer {GROK_API_KEY}", "Content-Type": "application/json"}
+        payload = {
+            "model": "grok-3",
+            "messages": [{"role": "user", "content": prompt}]
+        }
+        try:
+            response = requests.post("https://api.x.ai/v1/chat/completions", headers=headers, json=payload)
+            if response.status_code == 200:
+                answer = response.json()['choices'][0]['message']['content'].strip()
+                selected_paths = [line.strip() for line in answer.split('\n') if line.strip() and any(f.endswith(line) for f in all_files)]
+                return selected_paths
+            else:
+                logger.error(f"Grok API error for matching: {response.text}")
+                return []
+        except Exception as e:
+            logger.error(f"Grok API call for matching failed: {e}")
+            return []
+
+    def _process_query(self, sender_id: str, company_id: str, query: str, only_sops: bool = False):
+        # Send waiting message early
+        send_whatsapp_text(sender_id, "Neural Nets Engaged. Incoming 🚀")
+
+        matched_files = self._find_relevant_files(sender_id, company_id, query, only_sops)
+        if not matched_files:
             send_whatsapp_text(sender_id, "No relevant documents found. Try rephrasing your question.")
             self._clear_context(sender_id, company_id)
             self._send_feedback(sender_id, company_id)
             return
 
         contents = []
-        matched_files = []
-        for match in close_matches:
-            idx = titles.index(match)
-            file = all_files[idx]
+        for file in matched_files:
             content = self._load_content(company_id, file)
             if content:
                 contents.append(content)
-                matched_files.append(file)
 
         if not contents:
             send_whatsapp_text(sender_id, "Error loading document content.")
@@ -91,15 +108,12 @@ class QueryHandler(BaseHandler):
         concat_content = "\n\n".join(contents)
         prompt = f"Based on the following documents (prioritize personal docs if any):\n{concat_content}\n\nAnswer the user's query: {query}. Explain in simple, easy-to-understand language for normal people, like a friendly conversation. Highlight relevant sections of interest with **bold text**. Translate any legal or complex terms into plain English."
 
-        # Send waiting message
-        send_whatsapp_text(sender_id, "Neural Nets Engaged. Incoming 🚀")
-
         headers = {
             "Authorization": f"Bearer {GROK_API_KEY}",
             "Content-Type": "application/json"
         }
         payload = {
-            "model": "grok-beta",  # Suggested better model for improved reasoning and handling
+            "model": "grok-3",  # Updated to active model
             "messages": [
                 {"role": "system", "content": "You are a helpful HR assistant answering based on company and personal documents."},
                 {"role": "user", "content": prompt}
