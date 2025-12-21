@@ -5,6 +5,8 @@ from src.core.s3_handler import get_pdf_url
 from src.core.db_handler import get_s3_client
 from src.core.config import S3_BUCKET_NAME
 from src.core.logger import logger
+import re
+from datetime import datetime
 
 class DocumentsHandler(BaseHandler):
     priority = 80  # Lower than menu (100), but higher than others
@@ -44,6 +46,20 @@ class DocumentsHandler(BaseHandler):
                 categorized['Other'].append(file)
         return categorized
 
+    def _sort_files_by_date(self, files):
+        def extract_date(filename):
+            # Assume format like "Payslip - Month YYYY.pdf" or "Payslip_Dec_2025.pdf"
+            match = re.search(r'(\bjan\b|\bfeb\b|\bmar\b|\bapr\b|\bmay\b|\bjun\b|\bjul\b|\baug\b|\bsep\b|\boct\b|\bnov\b|\bdec\b|january|february|march|april|may|june|july|august|september|october|november|december)[\s_-]*(\d{4})?', filename.lower())
+            if match:
+                month_str = match.group(1)[:3]  # Shorten to 3 letters
+                year = match.group(2) or str(datetime.now().year)  # Default current year
+                month_map = {'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'may': 5, 'jun': 6, 'jul': 7, 'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12}
+                month = month_map.get(month_str, 1)
+                return datetime(int(year), month, 1)
+            return datetime.min  # Oldest if no date
+
+        return sorted(files, key=lambda f: extract_date(f.split('/')[-1]), reverse=True)  # Latest first
+
     def _send_documents_menu(self, sender_id: str, company_id: str):
         categorized = self._get_user_documents(sender_id, company_id)
         if not any(categorized.values()):
@@ -82,7 +98,7 @@ class DocumentsHandler(BaseHandler):
 
     def _send_documents_by_type(self, sender_id: str, company_id: str, doc_type: str):
         categorized = self._get_user_documents(sender_id, company_id)
-        files = categorized.get(doc_type, [])
+        files = self._sort_files_by_date(categorized.get(doc_type, []))
         if not files:
             send_whatsapp_text(sender_id, f"No {doc_type} found.")
             self._send_feedback(sender_id, company_id)
@@ -109,7 +125,7 @@ class DocumentsHandler(BaseHandler):
         success = send_whatsapp_list(
             sender_id,
             header=doc_type,
-            body="Select a file:",
+            body="Select a file (latest first):",
             footer="Back? Type 'back'",
             sections=sections
         )
@@ -186,7 +202,7 @@ class DocumentsHandler(BaseHandler):
         if 'payslips' in lowered:
             month = lowered.split('payslips')[-1].strip()  # e.g., "dec"
             categorized = self._get_user_documents(sender_id, company_id)
-            files = categorized['Payslips 💰']
+            files = self._sort_files_by_date(categorized['Payslips 💰'])
             if month:
                 # Simple filter: assume filenames like Jake_Zondagh_Payslip_Dec.pdf
                 filtered = [f for f in files if month.lower() in f.lower()]
