@@ -40,8 +40,8 @@ class MenuHandler(BaseHandler):
     def _send_main_menu(self, sender_id: str, company_id: str):
         buttons = [
             {"type": "reply", "reply": {"id": "docs_btn", "title": "Documents 📄"}},
-            {"type": "reply", "reply": {"id": "apps_btn", "title": "My Apps"}},
-            {"type": "reply", "reply": {"id": "hr_btn", "title": "Talk to HR"}}
+            {"type": "reply", "reply": {"id": "apps_btn", "title": "Tools 🛠️"}},
+            {"type": "reply", "reply": {"id": "hr_btn", "title": " Talk to HR 🤝"}}
         ]
         text = "Main Menu (づ๑•ᴗ•๑)づ✨"
         success = send_whatsapp_buttons(sender_id, text, buttons)
@@ -56,7 +56,7 @@ class MenuHandler(BaseHandler):
             {"type": "reply", "reply": {"id": "sop_btn", "title": "Train SOP 🎓"}},
             {"type": "reply", "reply": {"id": "placeholder_btn", "title": "Coming Soon 🚀"}}
         ]
-        text = "My Apps Menu"
+        text = "Tools"
         success = send_whatsapp_buttons(sender_id, text, buttons)
         if success:
             logger.info(f"Apps menu sent to {sender_id}")
