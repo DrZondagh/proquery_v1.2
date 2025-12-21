@@ -93,5 +93,5 @@ def process_incoming_message(data: dict) -> bool:
                 break
 
     if not handled:
-        send_whatsapp_text(sender_id, "Sorry, I didn't understand that. Try the menu!")
+        send_whatsapp_text(sender_id, "Sorry, I didn't understand that. Try saying 'Hi' for the menu!")
     return handled
