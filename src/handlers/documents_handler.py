@@ -61,6 +61,26 @@ class DocumentsHandler(BaseHandler):
 
         return sorted(files, key=lambda f: extract_date(f.split('/')[-1]), reverse=True)  # Latest first
 
+    def _get_nice_label(self, filename: str, category: str) -> str:
+        # Extract meaningful short label based on category
+        base = filename.replace('.pdf', '').replace('jake_zondagh_', '', 1).replace('_', ' ').strip()[:24]  # Remove common prefix, replace _ with space, truncate
+        if 'payslip' in category.lower():
+            match = re.search(r'(\bjan\b|\bfeb\b|\bmar\b|\bapr\b|\bmay\b|\bjun\b|\bjul\b|\baug\b|\bsep\b|\boct\b|\bnov\b|\bdec\b|january|february|march|april|may|june|july|august|september|october|november|december)[\s_-]*(\d{4})?', filename.lower())
+            if match:
+                month_str = match.group(1)[:3].capitalize()
+                year = match.group(2) or str(datetime.now().year)
+                return f"{month_str} {year}"
+        elif 'review' in category.lower() or 'performance' in category.lower():
+            # e.g., "Q4 2025 Review" if date, else base
+            match = re.search(r'(q[1-4])[\s_-]*(\d{4})?', filename.lower())
+            if match:
+                quarter = match.group(1).upper()
+                year = match.group(2) or str(datetime.now().year)
+                return f"{quarter} {year} Review"
+            return base
+        # Add similar for other categories as needed (e.g., warnings with date)
+        return base.capitalize()  # Default nice title
+
     def _send_documents_menu(self, sender_id: str, company_id: str):
         categorized = self._get_user_documents(sender_id, company_id)
         if not any(categorized.values()):
@@ -116,10 +136,10 @@ class DocumentsHandler(BaseHandler):
             for file in chunk:
                 filename = file.split('/')[-1]
                 row_id = f"doc_file_{filename}"
-                row_title = filename.replace('.pdf', '')[:24]  # Truncate, remove extension
+                nice_label = self._get_nice_label(filename, doc_type)
                 section["rows"].append({
                     "id": row_id,
-                    "title": row_title,
+                    "title": nice_label,
                     "description": "Tap to download"
                 })
             sections.append(section)
@@ -137,18 +157,17 @@ class DocumentsHandler(BaseHandler):
             logger.error(f"Failed to send {doc_type} list to {sender_id}")
 
     def _send_document(self, sender_id: str, company_id: str, filename: str):
-        send_whatsapp_text(sender_id, f"Sending your {filename.replace('.pdf', '')}...")
         key = f"{company_id}/employees/{sender_id}/{filename}"
         url = get_pdf_url(key)
         if url:
+            send_whatsapp_text(sender_id, f"Sending your {filename.replace('.pdf', '')}...")
             success = send_whatsapp_pdf(sender_id, url, filename, caption=f"Your {filename}")
             if success:
                 logger.info(f"Sent PDF {filename} to {sender_id}")
             else:
                 logger.error(f"Failed to send PDF {filename} to {sender_id}")
                 send_whatsapp_text(sender_id, "Error sending file. Try again.")
-            # Short delay to help sequencing
-            time.sleep(2)
+            time.sleep(2)  # Delay to help feedback sequencing
         else:
             send_whatsapp_text(sender_id, "File not found. Contact HR.")
         # Send feedback after action complete
