@@ -31,7 +31,11 @@ def process_incoming_message(data: dict) -> bool:
     try:
         entry = data['entry'][0]
         change = entry['changes'][0]
-        message = change['value']['messages'][0]
+        value = change['value']
+        if 'messages' not in value:
+            # Skip status updates (sent/delivered/read) silently
+            return True
+        message = value['messages'][0]
         sender_id = message['from']
         message_id = message['id']
         msg_type = message['type']
@@ -62,10 +66,10 @@ def process_incoming_message(data: dict) -> bool:
         return True
     mark_message_processed(sender_id, message_id, company_id)
 
-    # Rate limit for text messages (10s)
+    # Rate limit for text messages (5s now, was 10s)
     if msg_type == 'text':
         last_time = get_last_response_time(sender_id, company_id)
-        if last_time and (datetime.now() - last_time) < timedelta(seconds=10):
+        if last_time and (datetime.now() - last_time) < timedelta(seconds=5):
             logger.warning(f"Rate limit hit for {sender_id}")
             return False
         update_last_response_time(sender_id, company_id)
