@@ -60,14 +60,6 @@ class DocumentsHandler(BaseHandler):
 
         return sorted(files, key=lambda f: extract_date(f.split('/')[-1]), reverse=True)  # Latest first
 
-    def _get_month_label(self, filename: str) -> str:
-        match = re.search(r'(\bjan\b|\bfeb\b|\bmar\b|\bapr\b|\bmay\b|\bjun\b|\bjul\b|\baug\b|\bsep\b|\boct\b|\bnov\b|\bdec\b|january|february|march|april|may|june|july|august|september|october|november|december)[\s_-]*(\d{4})?', filename.lower())
-        if match:
-            month_str = match.group(1)[:3].capitalize()
-            year = match.group(2) or str(datetime.now().year)
-            return f"{month_str} {year}"
-        return "Payslip"  # Fallback
-
     def _send_documents_menu(self, sender_id: str, company_id: str):
         categorized = self._get_user_documents(sender_id, company_id)
         if not any(categorized.values()):
@@ -123,10 +115,10 @@ class DocumentsHandler(BaseHandler):
             for file in chunk:
                 filename = file.split('/')[-1]
                 row_id = f"doc_file_{filename}"
-                month_label = self._get_month_label(filename) if 'payslip' in filename.lower() else filename[:24]
+                row_title = filename.replace('.pdf', '')[:24]  # Truncate, remove extension
                 section["rows"].append({
                     "id": row_id,
-                    "title": month_label,  # Use month/year for payslips, truncate others
+                    "title": row_title,
                     "description": "Tap to download"
                 })
             sections.append(section)
@@ -144,7 +136,7 @@ class DocumentsHandler(BaseHandler):
             logger.error(f"Failed to send {doc_type} list to {sender_id}")
 
     def _send_document(self, sender_id: str, company_id: str, filename: str):
-        send_whatsapp_text(sender_id, f"Sending your {filename}...")
+        send_whatsapp_text(sender_id, f"Sending your {filename.replace('.pdf', '')}...")
         key = f"{company_id}/employees/{sender_id}/{filename}"
         url = get_pdf_url(key)
         if url:
@@ -224,6 +216,7 @@ class DocumentsHandler(BaseHandler):
             sent_count = 0
             for file in files:
                 filename = file.split('/')[-1]
+                send_whatsapp_text(sender_id, f"Sending your {filename.replace('.pdf', '')}...")
                 url = get_pdf_url(file)
                 if url:
                     send_whatsapp_pdf(sender_id, url, filename, caption=f"Your {filename}")

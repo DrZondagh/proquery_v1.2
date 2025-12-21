@@ -66,10 +66,10 @@ def process_incoming_message(data: dict) -> bool:
         return True
     mark_message_processed(sender_id, message_id, company_id)
 
-    # Rate limit for text messages (5s now, was 10s)
+    # Rate limit for text messages (3s now, was 5s)
     if msg_type == 'text':
         last_time = get_last_response_time(sender_id, company_id)
-        if last_time and (datetime.now() - last_time) < timedelta(seconds=5):
+        if last_time and (datetime.now() - last_time) < timedelta(seconds=3):
             logger.warning(f"Rate limit hit for {sender_id}")
             return False
         update_last_response_time(sender_id, company_id)
