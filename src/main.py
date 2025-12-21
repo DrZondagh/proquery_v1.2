@@ -21,5 +21,9 @@ def webhook():
         process_incoming_message(data)
         return 'OK', 200
 
+@app.route('/', methods=['GET'])
+def home():
+    return "ProQuery HR Bot is running!", 200
+
 if __name__ == '__main__':
     app.run(debug=True)
