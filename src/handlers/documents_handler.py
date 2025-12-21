@@ -27,18 +27,18 @@ class DocumentsHandler(BaseHandler):
             'Other': []
         }
         for file in files:
-            filename = file.split('/')[-1]
-            if 'Job_Description' in filename:
-                categorized['Job Description 📋'].append(file)  # Use full key for sending
-            elif 'Payslip' in filename:
+            filename = file.split('/')[-1].lower()  # Lower for case-insensitive match
+            if 'job_description' in filename or 'jobdescription' in filename:
+                categorized['Job Description 📋'].append(file)
+            elif 'payslip' in filename:
                 categorized['Payslips 💰'].append(file)
-            elif 'Handbook' in filename:
+            elif 'handbook' in filename:
                 categorized['Employee Handbook 📖'].append(file)
-            elif 'Review' in filename:
+            elif 'review' in filename or 'performance' in filename:
                 categorized['Performance Reviews ⭐'].append(file)
-            elif 'Benefits' in filename:
+            elif 'benefits' in filename or 'benefit' in filename:
                 categorized['Benefits Guide 🎁'].append(file)
-            elif 'Warning' in filename:
+            elif 'warning' in filename:
                 categorized['Warning Letters ⚠️'].append(file)
             else:
                 categorized['Other'].append(file)
@@ -91,9 +91,11 @@ class DocumentsHandler(BaseHandler):
         # Split into multiple sections if >10 files (WhatsApp max 10 rows/section, up to 10 sections)
         sections = []
         chunk_size = 10
+        short_type = doc_type.split(' ')[0]  # Shorten for title, e.g., "Payslips" instead of "Payslips 💰"
         for i in range(0, len(files), chunk_size):
             chunk = files[i:i + chunk_size]
-            section = {"title": f"{doc_type} ({i+1}-{i+len(chunk)})", "rows": []}
+            section_title = f"{short_type} ({i+1}-{i+len(chunk)})"  # Keep under 24 chars
+            section = {"title": section_title, "rows": []}
             for file in chunk:
                 filename = file.split('/')[-1]
                 row_id = f"doc_file_{filename}"
@@ -135,7 +137,7 @@ class DocumentsHandler(BaseHandler):
         buttons = [
             {"type": "reply", "reply": {"id": "feedback_yes", "title": "Yes 👍"}},
             {"type": "reply", "reply": {"id": "feedback_no", "title": "No 👎"}},
-            {"type": "reply", "reply": {"id": "main_menu_btn", "title": "Back to Menu 🔙"}}
+            {"type": "reply", "reply": {"id": "main_menu_btn", "title": "Back to Menu ↩️"}}
         ]
         text = "Was this helpful?"
         success = send_whatsapp_buttons(sender_id, text, buttons)
