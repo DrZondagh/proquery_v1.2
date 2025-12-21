@@ -20,28 +20,28 @@ class DocumentsHandler(BaseHandler):
         response = client.list_objects_v2(Bucket=S3_BUCKET_NAME, Prefix=prefix)
         files = [obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.pdf')]
         categorized = {
-            'Job Description 📋': [],
-            'Payslips 💰': [],
-            'Employee Handbook 📖': [],
-            'Performance Reviews ⭐': [],
-            'Benefits Guide 🎁': [],
-            'Warning Letters ⚠️': [],
+            '📋 Job Description': [],
+            '💰 Payslips': [],
+            '📖 Employee Handbook': [],
+            '⭐ Performance Reviews': [],
+            '📌 Benefits Guide': [],
+            '⚠️ Warning Letters': [],
             'Other': []
         }
         for file in files:
             filename = file.split('/')[-1].lower()  # Lower for case-insensitive match
             if 'job_description' in filename or 'jobdescription' in filename:
-                categorized['Job Description 📋'].append(file)
+                categorized['📋 Job Description'].append(file)
             elif 'payslip' in filename:
-                categorized['Payslips 💰'].append(file)
+                categorized['💰 Payslips'].append(file)
             elif 'handbook' in filename:
-                categorized['Employee Handbook 📖'].append(file)
+                categorized['📖 Employee Handbook'].append(file)
             elif 'review' in filename or 'performance' in filename:
-                categorized['Performance Reviews ⭐'].append(file)
+                categorized['⭐ Performance Reviews'].append(file)
             elif 'benefits' in filename or 'benefit' in filename:
-                categorized['Benefits Guide 🎁'].append(file)
+                categorized['📌 Benefits Guide'].append(file)
             elif 'warning' in filename:
-                categorized['Warning Letters ⚠️'].append(file)
+                categorized['⚠️ Warning Letters'].append(file)
             else:
                 categorized['Other'].append(file)
         return categorized
@@ -88,10 +88,7 @@ class DocumentsHandler(BaseHandler):
         sections = [{"title": "Document Types", "rows": []}]
         for category, files in categorized.items():
             if files:
-                # Compute row_id using text part only, alphanumeric safe
-                text_parts = ' '.join(word for word in category.split() if not re.match(r'^\W+$', word))  # Remove emoji words
-                row_id_base = '_'.join(text_parts.lower().split())
-                row_id = f"doc_type_{row_id_base}"  # e.g., doc_type_payslips
+                row_id = f"doc_type_{category.split(' ')[1].lower()}"  # e.g., doc_type_payslips, skipping emoji
                 sections[0]["rows"].append({
                     "id": row_id,
                     "title": category,
@@ -100,12 +97,12 @@ class DocumentsHandler(BaseHandler):
         # Add global policies
         sections[0]["rows"].append({
             "id": "doc_policies",
-            "title": "Company Policies/SOPs 📜",
+            "title": "📜 Company Policies/SOPs",
             "description": "Query company policies"
         })
         success = send_whatsapp_list(
             sender_id,
-            header="Documents 📄",
+            header="📄 Documents",
             body="Select a document type:",
             footer="Back to menu? Type 'menu'",
             sections=sections
@@ -130,8 +127,7 @@ class DocumentsHandler(BaseHandler):
         # Split into multiple sections if >10 files (WhatsApp max 10 rows/section, up to 10 sections)
         sections = []
         chunk_size = 10
-        # Shorten for title, remove emoji
-        short_type = ' '.join(word for word in doc_type.split() if not re.match(r'^\W+$', word))
+        short_type = doc_type.split(' ')[1]  # e.g., "Payslips", skipping emoji
         for i in range(0, len(files), chunk_size):
             chunk = files[i:i + chunk_size]
             section_title = f"{short_type} ({i+1}-{i+len(chunk)})"  # Keep under 24 chars
@@ -210,7 +206,7 @@ class DocumentsHandler(BaseHandler):
                 self._send_feedback(sender_id, company_id)
                 return True
             elif reply_id.startswith('doc_type_'):
-                doc_type_key = interactive_data['list_reply']['title']  # Use the full title directly, e.g., 'Payslips 💰'
+                doc_type_key = interactive_data['list_reply']['title']  # Use the full title directly, e.g., '💰 Payslips'
                 self._send_documents_by_type(sender_id, company_id, doc_type_key)
                 return True
             elif reply_id.startswith('doc_file_'):
@@ -226,12 +222,12 @@ class DocumentsHandler(BaseHandler):
             return True
         # Handle category-specific text like "payslips" or "benefits"
         category_map = {
-            'payslips': 'Payslips 💰',
-            'benefits': 'Benefits Guide 🎁',
-            'handbook': 'Employee Handbook 📖',
-            'reviews': 'Performance Reviews ⭐',
-            'job description': 'Job Description 📋',
-            'warnings': 'Warning Letters ⚠️'
+            'payslips': '💰 Payslips',
+            'benefits': '📌 Benefits Guide',
+            'handbook': '📖 Employee Handbook',
+            'reviews': '⭐ Performance Reviews',
+            'job description': '📋 Job Description',
+            'warnings': '⚠️ Warning Letters'
         }
         for key, cat in category_map.items():
             if key in lowered:

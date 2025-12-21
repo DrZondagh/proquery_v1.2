@@ -43,7 +43,12 @@ class QueryHandler(BaseHandler):
         try:
             obj = client.get_object(Bucket=S3_BUCKET_NAME, Key=filepath)
             data = json.loads(obj['Body'].read().decode('utf-8'))
-            return data.get('content', '')
+            content = data.get('content')
+            if content:
+                return content
+            else:
+                # If no 'content' key, use the full JSON as string
+                return json.dumps(data)
         except Exception as e:
             logger.error(f"Error loading content {filepath}: {e}")
             return ""
