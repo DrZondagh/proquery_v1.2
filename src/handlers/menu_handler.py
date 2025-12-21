@@ -5,10 +5,8 @@ from src.core.base_handler import BaseHandler
 from src.core.whatsapp_handler import send_whatsapp_text, send_whatsapp_buttons
 from src.core.db_handler import update_bot_state, get_bot_state
 from src.core.logger import logger
-
 class MenuHandler(BaseHandler):
-    priority = 100  # Highest priority - greets and main menu always take precedence
-
+    priority = 100 # Highest priority - greets and main menu always take precedence
     def _is_greeting(self, text: str) -> bool:
         """Fuzzy match for common greetings and misspellings (case-insensitive)"""
         known_greetings = [
@@ -17,7 +15,6 @@ class MenuHandler(BaseHandler):
             'menu', 'start'
         ]
         lowered = text.lower().strip()
-
         # Exact regex matches first
         exact_patterns = [
             r'\bhi\b', r'\bhello\b', r'\bhey\b', r'\bhallo\b', r'\bgreetings\b',
@@ -26,7 +23,6 @@ class MenuHandler(BaseHandler):
         ]
         if any(re.search(pattern, lowered) for pattern in exact_patterns):
             return True
-
         # Fuzzy match for misspellings using difflib (standard lib, no extra deps)
         # Check if close to any known greeting (ratio > 0.7 for short words)
         words = lowered.split()
@@ -34,9 +30,7 @@ class MenuHandler(BaseHandler):
             matches = difflib.get_close_matches(word, known_greetings, n=1, cutoff=0.7)
             if matches:
                 return True
-
         return False
-
     def _send_main_menu(self, sender_id: str, company_id: str):
         buttons = [
             {"type": "reply", "reply": {"id": "docs_btn", "title": "Documents 📄"}},
@@ -49,7 +43,6 @@ class MenuHandler(BaseHandler):
             logger.info(f"Main menu sent to {sender_id}")
         else:
             logger.error(f"Failed to send main menu to {sender_id}")
-
     def _send_apps_menu(self, sender_id: str, company_id: str):
         buttons = [
             {"type": "reply", "reply": {"id": "leave_btn", "title": "Take Leave 🌴"}},
@@ -62,7 +55,6 @@ class MenuHandler(BaseHandler):
             logger.info(f"Apps menu sent to {sender_id}")
         else:
             logger.error(f"Failed to send apps menu to {sender_id}")
-
     def try_process_interactive(self, sender_id: str, company_id: str, interactive_data: dict) -> bool:
         if interactive_data.get('type') != 'button_reply':
             return False
@@ -76,13 +68,21 @@ class MenuHandler(BaseHandler):
         if button_id == "hr_btn":
             send_whatsapp_text(sender_id, "Talk to HR coming soon!")
             return True
+        if button_id == "leave_btn":
+            send_whatsapp_text(sender_id, "Take Leave coming soon! 🌴")
+            return True
+        if button_id == "sop_btn":
+            send_whatsapp_text(sender_id, "Train SOP coming soon! 🎓")
+            return True
         if button_id == "placeholder_btn":
             send_whatsapp_text(sender_id, "More Apps coming soon!")
             return True
         # We don't handle other buttons here yet - other handlers will
         return False
-
     def try_process_text(self, sender_id: str, company_id: str, text: str) -> bool:
+        state = get_bot_state(sender_id, company_id)
+        if state.get('context') == 'feedback_comment':
+            return False
         if self._is_greeting(text):
             self._send_main_menu(sender_id, company_id)
             return True

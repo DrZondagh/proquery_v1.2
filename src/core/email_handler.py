@@ -1,7 +1,7 @@
 # src/core/email_handler.py
 import smtplib
 from email.mime.text import MIMEText
-from src.core.config import EMAIL_HOST, EMAIL_PORT, EMAIL_USER, EMAIL_PASSWORD
+from src.core.config import EMAIL_HOST, EMAIL_PORT, EMAIL_USER, EMAIL_PASSWORD, EMAIL_FEEDBACK_TO
 from src.core.db_handler import get_user_info
 from src.core.logger import logger
 
@@ -27,12 +27,12 @@ def send_feedback_email(sender_id: str, helpful: bool, query: str, answer: str, 
         msg = MIMEText(body)
         msg['Subject'] = subject
         msg['From'] = EMAIL_USER
-        msg['To'] = EMAIL_USER  # Send to self
+        msg['To'] = EMAIL_FEEDBACK_TO
 
         with smtplib.SMTP(EMAIL_HOST, EMAIL_PORT) as server:
             server.starttls()
             server.login(EMAIL_USER, EMAIL_PASSWORD)
-            server.sendmail(EMAIL_USER, EMAIL_USER, msg.as_string())
+            server.sendmail(EMAIL_USER, EMAIL_FEEDBACK_TO, msg.as_string())
         logger.info(f"Feedback email sent for {sender_id}")
         return True
     except Exception as e:
