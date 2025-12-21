@@ -31,7 +31,6 @@ class QueryHandler(BaseHandler):
 
     def _get_clean_title(self, filepath: str) -> str:
         filename = filepath.split('/')[-1].replace('.json', '').replace('_', ' ').replace('-', ' ').strip()
-        # Remove common prefixes like 'Jake_Zondagh_', 'SOP-HR-001_'
         filename = re.sub(r'^(jake_zondagh_|sop-[a-z]+-\d+_)', '', filename.lower())
         return filename
 
@@ -46,7 +45,6 @@ class QueryHandler(BaseHandler):
             if content:
                 return content
             else:
-                # If no 'content' key, use the full JSON as string
                 return json.dumps(data)
         except Exception as e:
             logger.error(f"Error loading content {filepath}: {e}")
@@ -59,14 +57,14 @@ class QueryHandler(BaseHandler):
         if not all_files:
             return []
 
-        titles = [self._get_clean_title(f) + f" (path: {f})" for f in all_files]  # Include path for uniqueness
+        titles = [self._get_clean_title(f) + f" (path: {f})" for f in all_files]
         titles_str = "\n".join(titles)
 
         prompt = f"Given the user's query: '{query}' and this list of document titles and paths:\n{titles_str}\n\nSelect up to 5 most relevant file paths. Output only the paths, one per line, no explanations."
 
         headers = {"Authorization": f"Bearer {GROK_API_KEY}", "Content-Type": "application/json"}
         payload = {
-            "model": "grok-3",
+            "model": "grok-3-mini",
             "messages": [{"role": "user", "content": prompt}]
         }
         try:
@@ -83,7 +81,6 @@ class QueryHandler(BaseHandler):
             return []
 
     def _process_query(self, sender_id: str, company_id: str, query: str, only_sops: bool = False):
-        # Send waiting message early
         send_whatsapp_text(sender_id, "Neural Nets Engaged. Incoming 🚀")
 
         matched_files = self._find_relevant_files(sender_id, company_id, query, only_sops)
@@ -113,7 +110,7 @@ class QueryHandler(BaseHandler):
             "Content-Type": "application/json"
         }
         payload = {
-            "model": "grok-3",  # Updated to active model
+            "model": "grok-3-mini",
             "messages": [
                 {"role": "system", "content": "You are a helpful HR assistant answering based on company and personal documents."},
                 {"role": "user", "content": prompt}
