@@ -54,7 +54,7 @@ class MenuHandler(BaseHandler):
         buttons = [
             {"type": "reply", "reply": {"id": "leave_btn", "title": "Take Leave 🌴"}},
             {"type": "reply", "reply": {"id": "sop_btn", "title": "Train SOP 🎓"}},
-            {"type": "reply", "reply": {"id": "placeholder_btn", "title": "More Apps 🚀 Coming Soon"}}
+            {"type": "reply", "reply": {"id": "placeholder_btn", "title": "Coming Soon 🚀"}}
         ]
         text = "My Apps Menu"
         success = send_whatsapp_buttons(sender_id, text, buttons)
