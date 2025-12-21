@@ -7,9 +7,11 @@ from src.core.config import S3_BUCKET_NAME
 from src.core.logger import logger
 import re
 from datetime import datetime
-import time # For short delay
+import time  # For short delay
+
 class DocumentsHandler(BaseHandler):
-    priority = 80 # Lower than menu (100), but higher than others
+    priority = 80  # Lower than menu (100), but higher than others
+
     def _get_user_documents(self, sender_id: str, company_id: str):
         client = get_s3_client()
         if not client:
@@ -18,16 +20,16 @@ class DocumentsHandler(BaseHandler):
         response = client.list_objects_v2(Bucket=S3_BUCKET_NAME, Prefix=prefix)
         files = [obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.pdf')]
         categorized = {
-            '📋 Job Description ': [],
+            '📋 Job Description': [],
             '💰 Payslips': [],
-            '📖 Employee Handbook ': [],
+            '📖 Employee Handbook': [],
             '⭐ Performance Reviews': [],
             '🎁 Benefits Guide': [],
             '⚠️ Warning Letters': [],
             'Other': []
         }
         for file in files:
-            filename = file.split('/')[-1].lower() # Lower for case-insensitive match
+            filename = file.split('/')[-1].lower()  # Lower for case-insensitive match
             if 'job_description' in filename or 'jobdescription' in filename:
                 categorized['📋 Job Description'].append(file)
             elif 'payslip' in filename:
@@ -37,27 +39,29 @@ class DocumentsHandler(BaseHandler):
             elif 'review' in filename or 'performance' in filename:
                 categorized['⭐ Performance Reviews'].append(file)
             elif 'benefits' in filename or 'benefit' in filename:
-                categorized['📌 Benefits Guide'].append(file)
+                categorized['🎁 Benefits Guide'].append(file)
             elif 'warning' in filename:
                 categorized['⚠️ Warning Letters'].append(file)
             else:
                 categorized['Other'].append(file)
         return categorized
+
     def _sort_files_by_date(self, files):
         def extract_date(filename):
             # Assume format like "Payslip - Month YYYY.pdf" or "Payslip_Dec_2025.pdf"
             match = re.search(r'(\bjan\b|\bfeb\b|\bmar\b|\bapr\b|\bmay\b|\bjun\b|\bjul\b|\baug\b|\bsep\b|\boct\b|\bnov\b|\bdec\b|january|february|march|april|may|june|july|august|september|october|november|december)[\s_-]*(\d{4})?', filename.lower())
             if match:
-                month_str = match.group(1)[:3] # Shorten to 3 letters
-                year = match.group(2) or str(datetime.now().year) # Default current year
+                month_str = match.group(1)[:3]  # Shorten to 3 letters
+                year = match.group(2) or str(datetime.now().year)  # Default current year
                 month_map = {'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'may': 5, 'jun': 6, 'jul': 7, 'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12}
                 month = month_map.get(month_str, 1)
                 return datetime(int(year), month, 1)
-            return datetime.min # Oldest if no date
-        return sorted(files, key=lambda f: extract_date(f.split('/')[-1]), reverse=True) # Latest first
+            return datetime.min  # Oldest if no date
+        return sorted(files, key=lambda f: extract_date(f.split('/')[-1]), reverse=True)  # Latest first
+
     def _get_nice_label(self, filename: str, category: str) -> str:
         # Extract meaningful short label based on category
-        base = filename.replace('.pdf', '').replace('jake_zondagh_', '', 1).replace('_', ' ').strip()[:24] # Remove common prefix, replace _ with space, truncate
+        base = filename.replace('.pdf', '').replace('jake_zondagh_', '', 1).replace('_', ' ').strip()[:24]  # Remove common prefix, replace _ with space, truncate
         if 'payslip' in category.lower():
             match = re.search(r'(\bjan\b|\bfeb\b|\bmar\b|\bapr\b|\bmay\b|\bjun\b|\bjul\b|\baug\b|\bsep\b|\boct\b|\bnov\b|\bdec\b|january|february|march|april|may|june|july|august|september|october|november|december)[\s_-]*(\d{4})?', filename.lower())
             if match:
@@ -73,7 +77,8 @@ class DocumentsHandler(BaseHandler):
                 return f"{quarter} {year} Review"
             return base
         # Add similar for other categories as needed (e.g., warnings with date)
-        return base.capitalize() # Default nice title
+        return base.capitalize()  # Default nice title
+
     def _send_documents_menu(self, sender_id: str, company_id: str):
         categorized = self._get_user_documents(sender_id, company_id)
         if not any(categorized.values()):
@@ -83,7 +88,7 @@ class DocumentsHandler(BaseHandler):
         sections = [{"title": "Document Types", "rows": []}]
         for category, files in categorized.items():
             if files:
-                row_id = f"doc_type_{category.split(' ')[0].lower()}" # e.g., doc_type_payslips
+                row_id = f"doc_type_{category.split(' ')[0].lower()}"  # e.g., doc_type_payslips
                 sections[0]["rows"].append({
                     "id": row_id,
                     "title": category,
@@ -97,7 +102,7 @@ class DocumentsHandler(BaseHandler):
         })
         success = send_whatsapp_list(
             sender_id,
-            header="📄 Documents ",
+            header="📄 Documents",
             body="Select a document type:",
             footer="Back to menu? Type 'menu'",
             sections=sections
@@ -106,6 +111,7 @@ class DocumentsHandler(BaseHandler):
             logger.info(f"Documents menu sent to {sender_id}")
         else:
             logger.error(f"Failed to send documents menu to {sender_id}")
+
     def _send_documents_by_type(self, sender_id: str, company_id: str, doc_type: str):
         categorized = self._get_user_documents(sender_id, company_id)
         files = self._sort_files_by_date(categorized.get(doc_type, []))
@@ -121,10 +127,10 @@ class DocumentsHandler(BaseHandler):
         # Split into multiple sections if >10 files (WhatsApp max 10 rows/section, up to 10 sections)
         sections = []
         chunk_size = 10
-        short_type = doc_type.split(' ')[0] # Shorten for title, e.g., "Payslips" instead of "Payslips 💰"
+        short_type = doc_type.split(' ')[0]  # Shorten for title, e.g., "Payslips" instead of "Payslips 💰"
         for i in range(0, len(files), chunk_size):
             chunk = files[i:i + chunk_size]
-            section_title = f"{short_type} ({i+1}-{i+len(chunk)})" # Keep under 24 chars
+            section_title = f"{short_type} ({i+1}-{i+len(chunk)})"  # Keep under 24 chars
             section = {"title": section_title, "rows": []}
             for file in chunk:
                 filename = file.split('/')[-1]
@@ -147,6 +153,7 @@ class DocumentsHandler(BaseHandler):
             logger.info(f"{doc_type} list sent to {sender_id}")
         else:
             logger.error(f"Failed to send {doc_type} list to {sender_id}")
+
     def _send_document(self, sender_id: str, company_id: str, filename: str):
         key = f"{company_id}/employees/{sender_id}/{filename}"
         url = get_pdf_url(key)
@@ -158,11 +165,12 @@ class DocumentsHandler(BaseHandler):
             else:
                 logger.error(f"Failed to send PDF {filename} to {sender_id}")
                 send_whatsapp_text(sender_id, "Error sending file. Try again.")
-            time.sleep(2) # Delay to help feedback sequencing
+            time.sleep(2)  # Delay to help feedback sequencing
         else:
             send_whatsapp_text(sender_id, "File not found. Contact HR.")
         # Send feedback after action complete
         self._send_feedback(sender_id, company_id)
+
     def _send_feedback(self, sender_id: str, company_id: str):
         buttons = [
             {"type": "reply", "reply": {"id": "feedback_yes", "title": "Yes 👍"}},
@@ -175,6 +183,7 @@ class DocumentsHandler(BaseHandler):
             logger.info(f"Feedback buttons sent to {sender_id}")
         else:
             logger.error(f"Failed to send feedback buttons to {sender_id}")
+
     def try_process_interactive(self, sender_id: str, company_id: str, interactive_data: dict) -> bool:
         int_type = interactive_data.get('type')
         if int_type == 'button_reply':
@@ -197,7 +206,7 @@ class DocumentsHandler(BaseHandler):
                 self._send_feedback(sender_id, company_id)
                 return True
             elif reply_id.startswith('doc_type_'):
-                doc_type_key = interactive_data['list_reply']['title'] # Use the full title directly, e.g., 'Payslips 💰'
+                doc_type_key = interactive_data['list_reply']['title']  # Use the full title directly, e.g., '💰 Payslips'
                 self._send_documents_by_type(sender_id, company_id, doc_type_key)
                 return True
             elif reply_id.startswith('doc_file_'):
@@ -205,6 +214,7 @@ class DocumentsHandler(BaseHandler):
                 self._send_document(sender_id, company_id, filename)
                 return True
         return False
+
     def try_process_text(self, sender_id: str, company_id: str, text: str) -> bool:
         lowered = text.lower().strip()
         if 'documents' in lowered or 'docs' in lowered:
@@ -212,12 +222,12 @@ class DocumentsHandler(BaseHandler):
             return True
         # Handle category-specific text like "payslips" or "benefits"
         category_map = {
-            'payslips': 'Payslips 💰',
-            'benefits': 'Benefits Guide 🎁',
-            'handbook': 'Employee Handbook 📖',
-            'reviews': 'Performance Reviews ⭐',
-            'job description': 'Job Description 📋',
-            'warnings': 'Warning Letters ⚠️'
+            'payslips': '💰 Payslips',
+            'benefits': '🎁 Benefits Guide',
+            'handbook': '📖 Employee Handbook',
+            'reviews': '⭐ Performance Reviews',
+            'job description': '📋 Job Description',
+            'warnings': '⚠️ Warning Letters'
         }
         for key, cat in category_map.items():
             if key in lowered:
