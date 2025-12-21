@@ -1,6 +1,6 @@
 # src/handlers/documents_handler.py
 from src.core.base_handler import BaseHandler
-from src.core.whatsapp_handler import send_whatsapp_list, send_whatsapp_pdf, send_whatsapp_text
+from src.core.whatsapp_handler import send_whatsapp_list, send_whatsapp_pdf, send_whatsapp_text, send_whatsapp_buttons
 from src.core.s3_handler import get_pdf_url
 from src.core.db_handler import get_s3_client
 from src.core.config import S3_BUCKET_NAME
@@ -48,6 +48,7 @@ class DocumentsHandler(BaseHandler):
         categorized = self._get_user_documents(sender_id, company_id)
         if not any(categorized.values()):
             send_whatsapp_text(sender_id, "No documents found for you.")
+            self._send_feedback(sender_id, company_id)
             return
 
         sections = [{"title": "Document Types", "rows": []}]
@@ -84,17 +85,24 @@ class DocumentsHandler(BaseHandler):
         files = categorized.get(doc_type, [])
         if not files:
             send_whatsapp_text(sender_id, f"No {doc_type} found.")
+            self._send_feedback(sender_id, company_id)
             return
 
-        sections = [{"title": doc_type, "rows": []}]
-        for file in files:
-            filename = file.split('/')[-1]
-            row_id = f"doc_file_{filename}"
-            sections[0]["rows"].append({
-                "id": row_id,
-                "title": filename[:24],  # Truncate for WhatsApp limit
-                "description": "Tap to download"
-            })
+        # Split into multiple sections if >10 files (WhatsApp max 10 rows/section, up to 10 sections)
+        sections = []
+        chunk_size = 10
+        for i in range(0, len(files), chunk_size):
+            chunk = files[i:i + chunk_size]
+            section = {"title": f"{doc_type} ({i+1}-{i+len(chunk)})", "rows": []}
+            for file in chunk:
+                filename = file.split('/')[-1]
+                row_id = f"doc_file_{filename}"
+                section["rows"].append({
+                    "id": row_id,
+                    "title": filename[:24],  # Truncate for WhatsApp limit
+                    "description": "Tap to download"
+                })
+            sections.append(section)
 
         success = send_whatsapp_list(
             sender_id,
@@ -120,18 +128,43 @@ class DocumentsHandler(BaseHandler):
                 send_whatsapp_text(sender_id, "Error sending file. Try again.")
         else:
             send_whatsapp_text(sender_id, "File not found. Contact HR.")
+        # Send feedback after action complete
+        self._send_feedback(sender_id, company_id)
+
+    def _send_feedback(self, sender_id: str, company_id: str):
+        buttons = [
+            {"type": "reply", "reply": {"id": "feedback_yes", "title": "Yes 👍"}},
+            {"type": "reply", "reply": {"id": "feedback_no", "title": "No 👎"}},
+            {"type": "reply", "reply": {"id": "main_menu_btn", "title": "Back to Menu 🔙"}}
+        ]
+        text = "Was this helpful?"
+        success = send_whatsapp_buttons(sender_id, text, buttons)
+        if success:
+            logger.info(f"Feedback buttons sent to {sender_id}")
+        else:
+            logger.error(f"Failed to send feedback buttons to {sender_id}")
 
     def try_process_interactive(self, sender_id: str, company_id: str, interactive_data: dict) -> bool:
         int_type = interactive_data.get('type')
         if int_type == 'button_reply':
-            if interactive_data['button_reply']['id'] == 'docs_btn':
+            button_id = interactive_data['button_reply']['id']
+            if button_id == 'docs_btn':
                 self._send_documents_menu(sender_id, company_id)
+                return True
+            # Handle feedback buttons (for now, just placeholders; email later)
+            if button_id == 'feedback_yes':
+                send_whatsapp_text(sender_id, "Thanks for the feedback!")
+                return True
+            if button_id == 'feedback_no':
+                send_whatsapp_text(sender_id, "Sorry to hear that. Please provide more details or type 'skip'.")
+                # Future: Set state for pending comment
                 return True
         elif int_type == 'list_reply':
             reply_id = interactive_data['list_reply']['id']
             if reply_id == 'doc_policies':
                 send_whatsapp_text(sender_id, "Query like 'recruitment policy' for details!")
-                return True  # Routes to SOP module later
+                self._send_feedback(sender_id, company_id)
+                return True
             elif reply_id.startswith('doc_type_'):
                 doc_type_key = interactive_data['list_reply']['title']  # Use the full title directly, e.g., 'Payslips 💰'
                 self._send_documents_by_type(sender_id, company_id, doc_type_key)
@@ -157,13 +190,19 @@ class DocumentsHandler(BaseHandler):
                 filtered = [f for f in files if month.lower() in f.lower()]
                 if not filtered:
                     send_whatsapp_text(sender_id, f"No payslips found for {month}.")
+                    self._send_feedback(sender_id, company_id)
                     return True
                 files = filtered
+            sent_count = 0
             for file in files:
                 filename = file.split('/')[-1]
                 url = get_pdf_url(file)
                 if url:
                     send_whatsapp_pdf(sender_id, url, filename, caption=f"Your {filename}")
+                    sent_count += 1
+            if sent_count > 0:
+                self._send_feedback(sender_id, company_id)
             return True
         # Similar for other types (expand as needed)
+        # Future: Handle feedback comments here if state pending
         return False
