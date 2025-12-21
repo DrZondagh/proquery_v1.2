@@ -48,7 +48,6 @@ class DocumentsHandler(BaseHandler):
 
     def _sort_files_by_date(self, files):
         def extract_date(filename):
-            # Assume format like "Payslip - Month YYYY.pdf" or "Payslip_Dec_2025.pdf"
             match = re.search(r'(\bjan\b|\bfeb\b|\bmar\b|\bapr\b|\bmay\b|\bjun\b|\bjul\b|\baug\b|\bsep\b|\boct\b|\bnov\b|\bdec\b|january|february|march|april|may|june|july|august|september|october|november|december)[\s_-]*(\d{4})?', filename.lower())
             if match:
                 month_str = match.group(1)[:3]  # Shorten to 3 letters
@@ -60,7 +59,6 @@ class DocumentsHandler(BaseHandler):
         return sorted(files, key=lambda f: extract_date(f.split('/')[-1]), reverse=True)  # Latest first
 
     def _get_nice_label(self, filename: str, category: str) -> str:
-        # Extract meaningful short label based on category
         base = filename.replace('.pdf', '').replace('jake_zondagh_', '', 1).replace('_', ' ').strip()[:24]  # Remove common prefix, replace _ with space, truncate
         if 'payslip' in category.lower():
             match = re.search(r'(\bjan\b|\bfeb\b|\bmar\b|\bapr\b|\bmay\b|\bjun\b|\bjul\b|\baug\b|\bsep\b|\boct\b|\bnov\b|\bdec\b|january|february|march|april|may|june|july|august|september|october|november|december)[\s_-]*(\d{4})?', filename.lower())
@@ -69,14 +67,12 @@ class DocumentsHandler(BaseHandler):
                 year = match.group(2) or str(datetime.now().year)
                 return f"{month_str} {year}"
         elif 'review' in category.lower() or 'performance' in category.lower():
-            # e.g., "Q4 2025 Review" if date, else base
             match = re.search(r'(q[1-4])[\s_-]*(\d{4})?', filename.lower())
             if match:
                 quarter = match.group(1).upper()
                 year = match.group(2) or str(datetime.now().year)
                 return f"{quarter} {year} Review"
             return base
-        # Add similar for other categories as needed (e.g., warnings with date)
         return base.capitalize()  # Default nice title
 
     def _send_documents_menu(self, sender_id: str, company_id: str):
@@ -88,7 +84,10 @@ class DocumentsHandler(BaseHandler):
         sections = [{"title": "Document Types", "rows": []}]
         for category, files in categorized.items():
             if files:
-                row_id = f"doc_type_{category.split(' ')[1].lower()}"  # e.g., doc_type_payslips, skipping emoji
+                # Extract text parts without emoji
+                text_parts = ' '.join(word for word in category.split() if not re.match(r'^\W+$', word))
+                row_id_base = '_'.join(text_parts.lower().split())
+                row_id = f"doc_type_{row_id_base}"  # e.g., doc_type_job_description, doc_type_payslips
                 sections[0]["rows"].append({
                     "id": row_id,
                     "title": category,
@@ -119,15 +118,15 @@ class DocumentsHandler(BaseHandler):
             send_whatsapp_text(sender_id, f"No {doc_type} found.")
             self._send_feedback(sender_id, company_id)
             return
-        # If only one file, send it directly without list
         if len(files) == 1:
             filename = files[0].split('/')[-1]
             self._send_document(sender_id, company_id, filename)
             return
-        # Split into multiple sections if >10 files (WhatsApp max 10 rows/section, up to 10 sections)
         sections = []
         chunk_size = 10
-        short_type = doc_type.split(' ')[1]  # e.g., "Payslips", skipping emoji
+        # Shorten for title, remove emoji
+        text_parts = ' '.join(word for word in doc_type.split() if not re.match(r'^\W+$', word))
+        short_type = text_parts.split()[0] if text_parts.split() else 'Documents'  # First word
         for i in range(0, len(files), chunk_size):
             chunk = files[i:i + chunk_size]
             section_title = f"{short_type} ({i+1}-{i+len(chunk)})"  # Keep under 24 chars
@@ -168,7 +167,6 @@ class DocumentsHandler(BaseHandler):
             time.sleep(2)  # Delay to help feedback sequencing
         else:
             send_whatsapp_text(sender_id, "File not found. Contact HR.")
-        # Send feedback after action complete
         self._send_feedback(sender_id, company_id)
 
     def _send_feedback(self, sender_id: str, company_id: str):
@@ -191,13 +189,11 @@ class DocumentsHandler(BaseHandler):
             if button_id == 'docs_btn':
                 self._send_documents_menu(sender_id, company_id)
                 return True
-            # Handle feedback buttons (for now, just placeholders; email later)
             if button_id == 'feedback_yes':
                 send_whatsapp_text(sender_id, "Thanks for the feedback!")
                 return True
             if button_id == 'feedback_no':
                 send_whatsapp_text(sender_id, "Sorry to hear that. Please provide more details or type 'skip'.")
-                # Future: Set state for pending comment
                 return True
         elif int_type == 'list_reply':
             reply_id = interactive_data['list_reply']['id']
@@ -220,7 +216,6 @@ class DocumentsHandler(BaseHandler):
         if 'documents' in lowered or 'docs' in lowered:
             self._send_documents_menu(sender_id, company_id)
             return True
-        # Handle category-specific text like "payslips" or "benefits"
         category_map = {
             'payslips': '💰 Payslips',
             'benefits': '📌 Benefits Guide',
@@ -233,7 +228,6 @@ class DocumentsHandler(BaseHandler):
             if key in lowered:
                 filter_term = lowered.replace(key, '').strip()
                 if filter_term:
-                    # Specific filter, e.g., "payslips dec" - keep existing send filtered
                     categorized = self._get_user_documents(sender_id, company_id)
                     files = self._sort_files_by_date(categorized[cat])
                     filtered = [f for f in files if filter_term.lower() in f.lower()]
@@ -254,8 +248,6 @@ class DocumentsHandler(BaseHandler):
                         self._send_feedback(sender_id, company_id)
                     return True
                 else:
-                    # No filter, show the menu/list for the category
                     self._send_documents_by_type(sender_id, company_id, cat)
                     return True
-        # Future: Handle feedback comments here if state pending
         return False
