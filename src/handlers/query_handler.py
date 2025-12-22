@@ -52,7 +52,7 @@ class QueryHandler(BaseHandler):
             return []
         titles = [self._get_clean_title(f) + f" (path: {f})" for f in all_files] # Include path for uniqueness
         titles_str = "\n".join(titles)
-        prompt = f"Given the user's query: '{query}' and this list of document titles and paths:\n{titles_str}\n\nSelect up to 5 most relevant file paths. Output only the paths, one per line, no explanations."
+        prompt = f"Given the user's query: '{query}' and this list of document titles and paths:\n{titles_str}\n\nSelect up to 10 most relevant file paths, prioritizing any that match keywords or semantics. Output only the paths, one per line, no explanations."
         headers = {"Authorization": f"Bearer {GROK_API_KEY}", "Content-Type": "application/json"}
         payload = {
             "model": "grok-3-mini",
@@ -84,7 +84,7 @@ class QueryHandler(BaseHandler):
         for file in matched_files:
             content = self._load_content(company_id, file)
             if content:
-                contents.append(content)
+                contents.append(f"Document: {self._get_clean_title(file)}\n{content}")
         if not contents:
             answer = "Error loading document content."
             send_whatsapp_text(sender_id, answer)
@@ -93,7 +93,7 @@ class QueryHandler(BaseHandler):
             self._send_feedback(sender_id, company_id)
             return
         concat_content = "\n\n".join(contents)
-        prompt = f"Based on the following documents (prioritize personal docs if any):\n{concat_content}\n\nAnswer the user's query: {query}. Explain in simple, easy-to-understand language for normal people, like a friendly conversation. Highlight relevant sections of interest with **bold text**. Translate any legal or complex terms into plain English."
+        prompt = f"Based on the following documents (prioritize personal docs if any):\n{concat_content}\n\nAnswer the user's query: {query}. Provide one comprehensive friendly explanation. For each relevant document, summarize its key sections related to the query with **bold highlights** for important parts. Translate any legal or complex terms into plain English. List summaries per document before the overall answer."
         headers = {
             "Authorization": f"Bearer {GROK_API_KEY}",
             "Content-Type": "application/json"
