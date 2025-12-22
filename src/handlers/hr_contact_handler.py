@@ -47,7 +47,7 @@ class HrContactHandler(BaseHandler):
                 urgency = state.get('urgency', "Standard")
                 success = send_hr_email(sender_id, text, urgency)
                 if success:
-                    send_whatsapp_text(sender_id, "Your query has been sent to HR! They'll contact you soon.")
+                    send_whatsapp_text(sender_id, "Your query has been sent to HR! They'll contact you soon.\n\n Type 'Hi' for Main Menu")
                     log_user_query(sender_id, text, "Sent to HR (Urgency: " + urgency + ")", company_id)
                 else:
                     send_whatsapp_text(sender_id, "Error sending your query. Please try again or contact HR directly.")
