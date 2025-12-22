@@ -8,7 +8,6 @@ class HrContactHandler(BaseHandler):
     priority = 75  # Higher than query (70) to process context-specific text first
     def _send_urgency_menu(self, sender_id: str, company_id: str):
         buttons = [
-            {"type": "reply", "reply": {"id": "urgency_emergency", "title": "🚨 Emergency"}},
             {"type": "reply", "reply": {"id": "urgency_high", "title": "🔥 High Priority"}},
             {"type": "reply", "reply": {"id": "urgency_standard", "title": "❓ Standard Query"}}
         ]
@@ -28,7 +27,6 @@ class HrContactHandler(BaseHandler):
             return True
         elif button_id.startswith("urgency_"):
             urgency_map = {
-                "urgency_emergency": "Emergency",
                 "urgency_high": "High Priority",
                 "urgency_standard": "Standard"
             }
