@@ -36,8 +36,10 @@ class QueryHandler(BaseHandler):
         try:
             obj = client.get_object(Bucket=S3_BUCKET_NAME, Key=filepath)
             data = json.loads(obj['Body'].read().decode('utf-8'))
+            if not isinstance(data, dict):
+                return ""  # Skip non-dict JSON like lists
             content = data.get('content', '')
-            return content[:300]  # Short snippet to avoid token limits
+            return content[:500]  # Increased to 500 for better context
         except Exception as e:
             logger.error(f"Error loading snippet {filepath}: {e}")
             return ""
@@ -73,7 +75,7 @@ class QueryHandler(BaseHandler):
                 snippet = self._load_content_snippet(company_id, f)
                 doc_entries.append(f"{title} (path: {f})\nSnippet: {snippet}")
             docs_str = "\n\n".join(doc_entries)
-            prompt = f"Given the user's query: '{query}' and this list of documents with titles, paths, and content snippets:\n{docs_str}\n\nSelect up to 10 most relevant file paths based on content relevance, prioritizing personal docs if matching. Output only the paths, one per line, no explanations."
+            prompt = f"Given the user's query: '{query}' and this list of documents with titles, paths, and content snippets:\n{docs_str}\n\nSelect up to 10 most relevant file paths based on content relevance, synonyms (e.g., 'leave' as vacation/time off), and misspellings. Prioritize personal docs if matching. Output only the paths, one per line, no explanations."
         headers = {"Authorization": f"Bearer {GROK_API_KEY}", "Content-Type": "application/json"}
         payload = {
             "model": "grok-beta",
@@ -95,7 +97,7 @@ class QueryHandler(BaseHandler):
         # Determine mode based on role or company (for client pay tiers); default advanced for robustness
         _, role, _, _ = get_user_info(sender_id)  # From db_handler
         mode = 'advanced' if role in ['ceo', 'hr_head'] else 'basic'  # Example: advanced for premium roles
-        send_whatsapp_text(sender_id, "ProQuery's Neural Network Engaged. Incoming 🚀")
+        send_whatsapp_text(sender_id, "ProQuery: AI driven efficiency. Incoming 🚀")
         matched_files = self._find_relevant_files(sender_id, company_id, query, only_sops, mode=mode)
         if not matched_files:
             answer = "No relevant documents found. Try rephrasing your question."
@@ -117,7 +119,7 @@ class QueryHandler(BaseHandler):
             self._send_feedback(sender_id, company_id)
             return
         concat_content = "\n\n".join(contents)
-        prompt = f"Based on the following documents (prioritize personal docs if any):\n{concat_content}\n\nAnswer the user's query: {query}. Give a concise AI-generated summary of all matching documents, highlighting key sections with **bold** for important parts. Include where to find info in each document. Translate complex terms to plain English. Keep it friendly and direct, no intro fluff."
+        prompt = f"Based on the following documents (prioritize personal docs if any):\n{concat_content}\n\nAnswer the user's query: {query}. Give a concise AI-generated summary of all matching documents, highlighting key sections with **bold** for important parts. Include where to find info in each document. Translate complex terms to plain English. Keep it friendly and direct, no intro fluff. Provide actionable insights if possible, and be thorough in extracting all relevant rules."
         headers = {
             "Authorization": f"Bearer {GROK_API_KEY}",
             "Content-Type": "application/json"
