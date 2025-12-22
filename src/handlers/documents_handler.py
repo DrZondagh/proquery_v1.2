@@ -1,148 +1,179 @@
-# src/handlers/query_handler.py
-import json
-import requests
-import re
+# src/handlers/documents_handler.py
 from src.core.base_handler import BaseHandler
-from src.core.whatsapp_handler import send_whatsapp_text, send_whatsapp_pdf, send_whatsapp_buttons
+from src.core.whatsapp_handler import send_whatsapp_list, send_whatsapp_pdf, send_whatsapp_text, send_whatsapp_buttons
 from src.core.s3_handler import get_pdf_url
-from src.core.db_handler import get_s3_client, get_bot_state, update_bot_state, set_pending_feedback
-from src.core.config import S3_BUCKET_NAME, GROK_API_KEY
+from src.core.db_handler import get_s3_client, set_pending_feedback, get_bot_state, update_bot_state
+from src.core.config import S3_BUCKET_NAME
 from src.core.logger import logger
-import time # For delay in sending PDFs
-class QueryHandler(BaseHandler):
-    priority = 70 # Lower than documents (80) and SOP (90)
-    def _get_personal_files(self, sender_id: str, company_id: str) -> list[str]:
+import re
+from datetime import datetime
+import time # For short delay
+class DocumentsHandler(BaseHandler):
+    priority = 80 # Lower than menu (100), but higher than others
+    def _get_user_documents(self, sender_id: str, company_id: str):
         client = get_s3_client()
         if not client:
             return []
         prefix = f"{company_id}/employees/{sender_id}/"
         response = client.list_objects_v2(Bucket=S3_BUCKET_NAME, Prefix=prefix)
-        return [obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.json')]
-    def _get_global_sop_files(self, company_id: str) -> list[str]:
-        client = get_s3_client()
-        if not client:
-            return []
-        prefix = f"{company_id}/sops/all/"
-        response = client.list_objects_v2(Bucket=S3_BUCKET_NAME, Prefix=prefix)
-        return [obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.json')]
-    def _get_clean_title(self, filepath: str) -> str:
-        filename = filepath.split('/')[-1].replace('.json', '').replace('_', ' ').replace('-', ' ').strip()
-        filename = re.sub(r'^(jake_zondagh_|sop-[a-z]+-\d+_)', '', filename.lower())
-        return filename
-    def _load_content(self, company_id: str, filepath: str) -> str:
-        client = get_s3_client()
-        if not client:
-            return ""
-        try:
-            obj = client.get_object(Bucket=S3_BUCKET_NAME, Key=filepath)
-            data = json.loads(obj['Body'].read().decode('utf-8'))
-            content = data.get('content')
-            if content:
-                return content
-            else:
-                return json.dumps(data)
-        except Exception as e:
-            logger.error(f"Error loading content {filepath}: {e}")
-            return ""
-    def _find_relevant_files(self, sender_id: str, company_id: str, query: str, only_sops: bool = False) -> list[str]:
-        personal_files = self._get_personal_files(sender_id, company_id) if not only_sops else []
-        sop_files = self._get_global_sop_files(company_id)
-        all_files = personal_files + sop_files
-        if not all_files:
-            return []
-        titles = [self._get_clean_title(f) + f" (path: {f})" for f in all_files] # Include path for uniqueness
-        titles_str = "\n".join(titles)
-        prompt = f"Given the user's query: '{query}' and this list of document titles and paths:\n{titles_str}\n\nSelect up to 5 most relevant file paths. Output only the paths, one per line, no explanations."
-        headers = {"Authorization": f"Bearer {GROK_API_KEY}", "Content-Type": "application/json"}
-        payload = {
-            "model": "grok-3-mini",
-            "messages": [{"role": "user", "content": prompt}]
+        files = [obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.pdf')]
+        categorized = {
+            '📋 Job Description': [],
+            '💰 Payslips': [],
+            '📖 Employee Handbook': [],
+            '⭐ Performance Reviews': [],
+            '📌 Benefits Guide': [],
+            '⚠️ Warning Letters': [],
+            'Other': []
         }
-        try:
-            response = requests.post("https://api.x.ai/v1/chat/completions", headers=headers, json=payload)
-            if response.status_code == 200:
-                answer = response.json()['choices'][0]['message']['content'].strip()
-                selected_paths = [line.strip() for line in answer.split('\n') if line.strip() and any(f.endswith(line) for f in all_files)]
-                return selected_paths
+        for file in files:
+            filename = file.split('/')[-1].lower() # Lower for case-insensitive match
+            if 'job_description' in filename or 'jobdescription' in filename:
+                categorized['📋 Job Description'].append(file)
+            elif 'payslip' in filename:
+                categorized['💰 Payslips'].append(file)
+            elif 'handbook' in filename:
+                categorized['📖 Employee Handbook'].append(file)
+            elif 'review' in filename or 'performance' in filename:
+                categorized['⭐ Performance Reviews'].append(file)
+            elif 'benefits' in filename or 'benefit' in filename:
+                categorized['📌 Benefits Guide'].append(file)
+            elif 'warning' in filename:
+                categorized['⚠️ Warning Letters'].append(file)
             else:
-                logger.error(f"Grok API error for matching: {response.text}")
-                return []
-        except Exception as e:
-            logger.error(f"Grok API call for matching failed: {e}")
-            return []
-    def _process_query(self, sender_id: str, company_id: str, query: str, only_sops: bool = False):
-        send_whatsapp_text(sender_id, "Neural Nets Engaged. Incoming 🚀")
-        matched_files = self._find_relevant_files(sender_id, company_id, query, only_sops)
-        if not matched_files:
-            answer = "No relevant documents found. Try rephrasing your question."
+                categorized['Other'].append(file)
+        return categorized
+    def _sort_files_by_date(self, files):
+        def extract_date(filename):
+            # Assume format like "Payslip - Month YYYY.pdf" or "Payslip_Dec_2025.pdf"
+            match = re.search(r'(\bjan\b|\bfeb\b|\bmar\b|\bapr\b|\bmay\b|\bjun\b|\bjul\b|\baug\b|\bsep\b|\boct\b|\bnov\b|\bdec\b|january|february|march|april|may|june|july|august|september|october|november|december)[\s_-]*(\d{4})?', filename.lower())
+            if match:
+                month_str = match.group(1)[:3] # Shorten to 3 letters
+                year = match.group(2) or str(datetime.now().year) # Default current year
+                month_map = {'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'may': 5, 'jun': 6, 'jul': 7, 'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12}
+                month = month_map.get(month_str, 1)
+                return datetime(int(year), month, 1)
+            return datetime.min # Oldest if no date
+        return sorted(files, key=lambda f: extract_date(f.split('/')[-1]), reverse=True) # Latest first
+    def _get_nice_label(self, filename: str, category: str) -> str:
+        # Extract meaningful short label based on category
+        base = filename.replace('.pdf', '').replace('jake_zondagh_', '', 1).replace('_', ' ').strip()[:24] # Remove common prefix, replace _ with space, truncate
+        if 'payslip' in category.lower():
+            match = re.search(r'(\bjan\b|\bfeb\b|\bmar\b|\bapr\b|\bmay\b|\bjun\b|\bjul\b|\baug\b|\bsep\b|\boct\b|\bnov\b|\bdec\b|january|february|march|april|may|june|july|august|september|october|november|december)[\s_-]*(\d{4})?', filename.lower())
+            if match:
+                month_str = match.group(1)[:3].capitalize()
+                year = match.group(2) or str(datetime.now().year)
+                return f"{month_str} {year}"
+        elif 'review' in category.lower() or 'performance' in category.lower():
+            # e.g., "Q4 2025 Review" if date, else base
+            match = re.search(r'(q[1-4])[\s_-]*(\d{4})?', filename.lower())
+            if match:
+                quarter = match.group(1).upper()
+                year = match.group(2) or str(datetime.now().year)
+                return f"{quarter} {year} Review"
+            return base
+        # Add similar for other categories as needed (e.g., warnings with date)
+        return base.capitalize() # Default nice title
+    def _send_documents_menu(self, sender_id: str, company_id: str):
+        categorized = self._get_user_documents(sender_id, company_id)
+        if not any(categorized.values()):
+            answer = "No documents found for you."
             send_whatsapp_text(sender_id, answer)
-            set_pending_feedback(sender_id, company_id, {'query': query, 'answer': answer})
-            self._clear_context(sender_id, company_id)
+            set_pending_feedback(sender_id, company_id, {'query': "Requested documents", 'answer': answer})
             self._send_feedback(sender_id, company_id)
             return
-        contents = []
-        for file in matched_files:
-            content = self._load_content(company_id, file)
-            if content:
-                contents.append(content)
-        if not contents:
-            answer = "Error loading document content."
+        sections = [{"title": "Document Types", "rows": []}]
+        for category, files in categorized.items():
+            if files:
+                text_parts = ' '.join(word for word in category.split() if not re.match(r'^\W+$', word)) # Remove emoji
+                row_id_base = '_'.join(text_parts.lower().split())
+                row_id = f"doc_type_{row_id_base}" # e.g., doc_type_job_description
+                sections[0]["rows"].append({
+                    "id": row_id,
+                    "title": category,
+                    "description": f"{len(files)} available"
+                })
+        # Add global policies
+        sections[0]["rows"].append({
+            "id": "doc_policies",
+            "title": "📜 Company Policies/SOPs",
+            "description": "Query company policies"
+        })
+        success = send_whatsapp_list(
+            sender_id,
+            header="📄 Documents",
+            body="Select a document type:",
+            footer="Back to menu? Type 'menu'",
+            sections=sections
+        )
+        if success:
+            logger.info(f"Documents menu sent to {sender_id}")
+        else:
+            logger.error(f"Failed to send documents menu to {sender_id}")
+    def _send_documents_by_type(self, sender_id: str, company_id: str, doc_type: str):
+        categorized = self._get_user_documents(sender_id, company_id)
+        files = self._sort_files_by_date(categorized.get(doc_type, []))
+        if not files:
+            answer = f"No {doc_type} found."
             send_whatsapp_text(sender_id, answer)
-            set_pending_feedback(sender_id, company_id, {'query': query, 'answer': answer})
-            self._clear_context(sender_id, company_id)
+            set_pending_feedback(sender_id, company_id, {'query': f"Requested {doc_type}", 'answer': answer})
             self._send_feedback(sender_id, company_id)
             return
-        concat_content = "\n\n".join(contents)
-        prompt = f"Based on the following documents (prioritize personal docs if any):\n{concat_content}\n\nFirst, determine if the documents are relevant to the query '{query}'. If yes, start your response with 'RELEVANT:' followed by the explanation. If not, start with 'NOT_RELEVANT:' and suggest rephrasing or contacting the appropriate department. If relevant, explain in simple, easy-to-understand language for normal people, like a friendly conversation. Highlight relevant sections of interest with **bold text**. Translate any legal or complex terms into plain English."
-        headers = {
-            "Authorization": f"Bearer {GROK_API_KEY}",
-            "Content-Type": "application/json"
-        }
-        payload = {
-            "model": "grok-3-mini",
-            "messages": [
-                {"role": "system", "content": "You are a helpful HR assistant answering based on company and personal documents."},
-                {"role": "user", "content": prompt}
-            ]
-        }
-        try:
-            response = requests.post("https://api.x.ai/v1/chat/completions", headers=headers, json=payload)
-            if response.status_code == 200:
-                full_answer = response.json()['choices'][0]['message']['content']
-                logger.info(f"Grok API full answer: {full_answer}")
-                if full_answer.startswith('NOT_RELEVANT:'):
-                    answer = full_answer[len('NOT_RELEVANT:'):].strip()
-                    send_whatsapp_text(sender_id, answer)
-                    set_pending_feedback(sender_id, company_id, {'query': query, 'answer': answer})
-                else:
-                    answer = full_answer[len('RELEVANT:'):].strip() if full_answer.startswith('RELEVANT:') else full_answer
-                    send_whatsapp_text(sender_id, answer)
-                    set_pending_feedback(sender_id, company_id, {'query': query, 'answer': answer})
-                    # Send all relevant PDFs after the summary
-                    for file in matched_files:
-                        pdf_file = file.replace('.json', '.pdf')
-                        url = get_pdf_url(pdf_file)
-                        if url:
-                            filename = pdf_file.split('/')[-1]
-                            send_whatsapp_text(sender_id, f"Sending full document: {self._get_clean_title(pdf_file).capitalize()}")
-                            success = send_whatsapp_pdf(sender_id, url, filename, caption="Full Document")
-                            time.sleep(2) # Delay for sequencing
-                            if not success:
-                                send_whatsapp_text(sender_id, "Error sending PDF.")
-                        else:
-                            send_whatsapp_text(sender_id, "PDF not found for this document.")
-                logger.info(f"Grok API answer sent to {sender_id}")
+        # If only one file, send it directly without list
+        if len(files) == 1:
+            filename = files[0].split('/')[-1]
+            self._send_document(sender_id, company_id, filename)
+            return
+        # Split into multiple sections if >10 files (WhatsApp max 10 rows/section, up to 10 sections)
+        sections = []
+        chunk_size = 10
+        text_parts = ' '.join(word for word in doc_type.split() if not re.match(r'^\W+$', word)) # Remove emoji
+        short_type = text_parts # Full text for title if needed
+        for i in range(0, len(files), chunk_size):
+            chunk = files[i:i + chunk_size]
+            section_title = f"{short_type} ({i+1}-{i+len(chunk)})" if len(files) > chunk_size else short_type # Keep under 24 chars
+            section = {"title": section_title, "rows": []}
+            for file in chunk:
+                filename = file.split('/')[-1]
+                row_id = f"doc_file_{filename}"
+                nice_label = self._get_nice_label(filename, doc_type)
+                section["rows"].append({
+                    "id": row_id,
+                    "title": nice_label,
+                    "description": "Tap to download"
+                })
+            sections.append(section)
+        success = send_whatsapp_list(
+            sender_id,
+            header=doc_type,
+            body="Select a file (latest first):",
+            footer="Back? Type 'back'",
+            sections=sections
+        )
+        if success:
+            logger.info(f"{doc_type} list sent to {sender_id}")
+        else:
+            logger.error(f"Failed to send {doc_type} list to {sender_id}")
+    def _send_document(self, sender_id: str, company_id: str, filename: str):
+        key = f"{company_id}/employees/{sender_id}/{filename}"
+        url = get_pdf_url(key)
+        answer = f"Sent {filename}"
+        if url:
+            send_whatsapp_text(sender_id, f"Sending your {filename.replace('.pdf', '')}...")
+            success = send_whatsapp_pdf(sender_id, url, filename, caption=f"Your {filename}")
+            if success:
+                logger.info(f"Sent PDF {filename} to {sender_id}")
             else:
-                answer = "Error getting answer from AI. Try again later."
-                send_whatsapp_text(sender_id, answer)
-                logger.error(f"Grok API error: {response.text}")
-                set_pending_feedback(sender_id, company_id, {'query': query, 'answer': answer})
-        except Exception as e:
-            answer = "Error processing your query."
-            send_whatsapp_text(sender_id, answer)
-            logger.error(f"Grok API call failed: {e}")
-            set_pending_feedback(sender_id, company_id, {'query': query, 'answer': answer})
-        self._clear_context(sender_id, company_id)
+                logger.error(f"Failed to send PDF {filename} to {sender_id}")
+                send_whatsapp_text(sender_id, "Error sending file. Try again.")
+                answer = "Error sending file. Try again."
+            time.sleep(2) # Delay to help feedback sequencing
+        else:
+            error_msg = "File not found. Contact HR."
+            send_whatsapp_text(sender_id, error_msg)
+            answer = error_msg
+        set_pending_feedback(sender_id, company_id, {'query': f"Requested {filename}", 'answer': answer})
+        # Send feedback after action complete
         self._send_feedback(sender_id, company_id)
     def _send_feedback(self, sender_id: str, company_id: str):
         buttons = [
@@ -156,22 +187,79 @@ class QueryHandler(BaseHandler):
             logger.info(f"Feedback buttons sent to {sender_id}")
         else:
             logger.error(f"Failed to send feedback buttons to {sender_id}")
-    def _clear_context(self, sender_id: str, company_id: str):
-        state = get_bot_state(sender_id, company_id)
-        if 'context' in state:
-            del state['context']
-            update_bot_state(sender_id, company_id, state)
     def try_process_interactive(self, sender_id: str, company_id: str, interactive_data: dict) -> bool:
+        int_type = interactive_data.get('type')
+        if int_type == 'button_reply':
+            button_id = interactive_data['button_reply']['id']
+            if button_id == 'docs_btn':
+                self._send_documents_menu(sender_id, company_id)
+                return True
+        elif int_type == 'list_reply':
+            reply_id = interactive_data['list_reply']['id']
+            if reply_id == 'doc_policies':
+                send_whatsapp_text(sender_id, "Query like 'recruitment policy' for details!")
+                state = get_bot_state(sender_id, company_id)
+                state['context'] = 'sop_query'
+                update_bot_state(sender_id, company_id, state)
+                return True
+            elif reply_id.startswith('doc_type_'):
+                doc_type_key = interactive_data['list_reply']['title'] # Use the full title directly, e.g., '💰 Payslips'
+                self._send_documents_by_type(sender_id, company_id, doc_type_key)
+                return True
+            elif reply_id.startswith('doc_file_'):
+                filename = reply_id[9:]
+                self._send_document(sender_id, company_id, filename)
+                return True
         return False
     def try_process_text(self, sender_id: str, company_id: str, text: str) -> bool:
         state = get_bot_state(sender_id, company_id)
         if state.get('context') == 'feedback_comment':
             return False
-        context = state.get('context')
-        if context == 'query' or context == 'sop_query':
-            only_sops = (context == 'sop_query')
-            self._process_query(sender_id, company_id, text, only_sops=only_sops)
+        lowered = text.lower().strip()
+        if 'documents' in lowered or 'docs' in lowered:
+            self._send_documents_menu(sender_id, company_id)
             return True
-        # For unhandled text, treat as general query (since priority low, higher handlers missed it)
-        self._process_query(sender_id, company_id, text)
-        return True
+        # Handle category-specific text like "payslips" or "benefits"
+        category_map = {
+            'payslips': '💰 Payslips',
+            'benefits': '📌 Benefits Guide',
+            'handbook': '📖 Employee Handbook',
+            'reviews': '⭐ Performance Reviews',
+            'job description': '📋 Job Description',
+            'warnings': '⚠️ Warning Letters'
+        }
+        for key, cat in category_map.items():
+            if key in lowered:
+                filter_term = lowered.replace(key, '').strip()
+                if filter_term:
+                    # Specific filter, e.g., "payslips dec" - keep existing send filtered
+                    categorized = self._get_user_documents(sender_id, company_id)
+                    files = self._sort_files_by_date(categorized[cat])
+                    filtered = [f for f in files if filter_term.lower() in f.lower()]
+                    if not filtered:
+                        answer = f"No {key} found for {filter_term}."
+                        send_whatsapp_text(sender_id, answer)
+                        set_pending_feedback(sender_id, company_id, {'query': lowered, 'answer': answer})
+                        self._send_feedback(sender_id, company_id)
+                        return True
+                    sent_count = 0
+                    sent_files = []
+                    for file in filtered:
+                        filename = file.split('/')[-1]
+                        send_whatsapp_text(sender_id, f"Sending your {filename.replace('.pdf', '')}...")
+                        url = get_pdf_url(file)
+                        if url:
+                            send_whatsapp_pdf(sender_id, url, filename, caption=f"Your {filename}")
+                            time.sleep(2)
+                            sent_count += 1
+                            sent_files.append(filename)
+                    answer = f"Sent {sent_count} files: {', '.join(sent_files)}" if sent_count > 0 else "Error sending files."
+                    set_pending_feedback(sender_id, company_id, {'query': lowered, 'answer': answer})
+                    if sent_count > 0:
+                        self._send_feedback(sender_id, company_id)
+                    return True
+                else:
+                    # No filter, show the menu/list for the category
+                    self._send_documents_by_type(sender_id, company_id, cat)
+                    return True
+        return False
