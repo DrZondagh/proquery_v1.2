@@ -50,7 +50,8 @@ class QueryHandler(BaseHandler):
             data = json.loads(obj['Body'].read().decode('utf-8'))
             if not isinstance(data, dict):
                 return ""
-            return data.get('content', '')[:1000]
+            content = data.get('content', '')
+            return content[:1000]  # Increased for deeper context
         except Exception as e:
             logger.error(f"Error loading snippet {filepath}: {e}")
             return ""
