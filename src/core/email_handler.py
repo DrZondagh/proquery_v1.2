@@ -44,6 +44,9 @@ def send_hr_email(sender_id: str, query: str, urgency: str = "Standard") -> bool
         msg['Subject'] = subject
         msg['From'] = EMAIL_USER
         msg['To'] = EMAIL_HR_TO
+        if urgency == "High Priority":
+            msg['Importance'] = 'High'
+            msg['X-Priority'] = '1'
         with smtplib.SMTP(EMAIL_HOST, EMAIL_PORT) as server:
             server.starttls()
             server.login(EMAIL_USER, EMAIL_PASSWORD)
