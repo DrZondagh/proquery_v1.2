@@ -2,6 +2,8 @@
 import json
 import requests
 import re
+import difflib
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from src.core.base_handler import BaseHandler
 from src.core.whatsapp_handler import send_whatsapp_text, send_whatsapp_pdf, send_whatsapp_buttons
 from src.core.s3_handler import get_pdf_url
@@ -10,20 +12,31 @@ from src.core.config import S3_BUCKET_NAME, GROK_API_KEY, GROK_MODEL
 from src.core.logger import logger
 class QueryHandler(BaseHandler):
     priority = 70
+    _cache = {}  # company_id -> {'personal': {sender_id: list}, 'sop': list}
     def _get_personal_files(self, sender_id: str, company_id: str) -> list[str]:
-        client = get_s3_client()
-        if not client:
-            return []
-        prefix = f"{company_id}/employees/{sender_id}/"
-        response = client.list_objects_v2(Bucket=S3_BUCKET_NAME, Prefix=prefix)
-        return [obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.json') and 'processed_messages.json' not in obj['Key'] and 'queries.json' not in obj['Key']]
+        if company_id not in self._cache:
+            self._cache[company_id] = {'personal': {}, 'sop': []}
+        if sender_id not in self._cache[company_id]['personal']:
+            client = get_s3_client()
+            if not client:
+                return []
+            prefix = f"{company_id}/employees/{sender_id}/"
+            response = client.list_objects_v2(Bucket=S3_BUCKET_NAME, Prefix=prefix)
+            files = [obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.json') and 'processed_messages.json' not in obj['Key'] and 'queries.json' not in obj['Key']]
+            self._cache[company_id]['personal'][sender_id] = files
+        return self._cache[company_id]['personal'][sender_id]
     def _get_global_sop_files(self, company_id: str) -> list[str]:
-        client = get_s3_client()
-        if not client:
-            return []
-        prefix = f"{company_id}/sops/all/"
-        response = client.list_objects_v2(Bucket=S3_BUCKET_NAME, Prefix=prefix)
-        return [obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.json')]
+        if company_id not in self._cache:
+            self._cache[company_id] = {'personal': {}, 'sop': []}
+        if not self._cache[company_id]['sop']:
+            client = get_s3_client()
+            if not client:
+                return []
+            prefix = f"{company_id}/sops/all/"
+            response = client.list_objects_v2(Bucket=S3_BUCKET_NAME, Prefix=prefix)
+            files = [obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.json')]
+            self._cache[company_id]['sop'] = files
+        return self._cache[company_id]['sop']
     def _get_clean_title(self, filepath: str) -> str:
         filename = filepath.split('/')[-1].replace('.json', '').replace('_', ' ').replace('-', ' ').strip()
         filename = re.sub(r'^(jake_zondagh_|sop-[a-z]+-\d+_)', '', filename.lower())
@@ -37,8 +50,7 @@ class QueryHandler(BaseHandler):
             data = json.loads(obj['Body'].read().decode('utf-8'))
             if not isinstance(data, dict):
                 return ""
-            content = data.get('content', '')
-            return content[:1000]  # Increased for deeper context
+            return data.get('content', '')[:1000]
         except Exception as e:
             logger.error(f"Error loading snippet {filepath}: {e}")
             return ""
@@ -49,22 +61,46 @@ class QueryHandler(BaseHandler):
         try:
             obj = client.get_object(Bucket=S3_BUCKET_NAME, Key=filepath)
             data = json.loads(obj['Body'].read().decode('utf-8'))
-            content = data.get('content')
-            if content:
-                return content
-            else:
-                return json.dumps(data)
+            return data.get('content', json.dumps(data))
         except Exception as e:
             logger.error(f"Error loading content {filepath}: {e}")
             return ""
+    def _local_pre_filter(self, all_files, query: str, company_id: str) -> list[str]:
+        query_words = set(re.findall(r'\w+', query.lower()))
+        scores = []
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            future_to_file = {executor.submit(self._load_content_snippet, company_id, f): f for f in all_files}
+            for future in as_completed(future_to_file):
+                f = future_to_file[future]
+                try:
+                    snippet = future.result()
+                    title = self._get_clean_title(f)
+                    title_words = set(re.findall(r'\w+', title.lower()))
+                    common = query_words.intersection(title_words)
+                    score = len(common)
+                    if score == 0:
+                        fuzzy_score = difflib.SequenceMatcher(None, query.lower(), title.lower() + snippet.lower()).ratio()
+                        if fuzzy_score > 0.6:
+                            score = 1
+                    if 'employees' in f:
+                        score += 5
+                    if score > 0:
+                        scores.append((score, f))
+                except Exception:
+                    pass
+        scores.sort(reverse=True)
+        return [f for score, f in scores[:20]]
     def _find_relevant_files(self, sender_id: str, company_id: str, query: str, only_sops: bool = False) -> list[str]:
         personal_files = self._get_personal_files(sender_id, company_id) if not only_sops else []
         sop_files = self._get_global_sop_files(company_id)
         all_files = personal_files + sop_files
         if not all_files:
             return []
+        pre_filtered = self._local_pre_filter(all_files, query, company_id)
+        if not pre_filtered:
+            return []
         doc_entries = []
-        for f in all_files:
+        for f in pre_filtered:
             title = self._get_clean_title(f)
             snippet = self._load_content_snippet(company_id, f)
             doc_entries.append(f"{title} (path: {f})\nSnippet: {snippet}")
