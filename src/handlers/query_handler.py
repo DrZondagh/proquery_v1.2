@@ -38,7 +38,7 @@ class QueryHandler(BaseHandler):
             if not isinstance(data, dict):
                 return ""
             content = data.get('content', '')
-            return content[:1000]  # Increased for more context
+            return content[:1000]  # Increased for deeper context
         except Exception as e:
             logger.error(f"Error loading snippet {filepath}: {e}")
             return ""
@@ -69,7 +69,7 @@ class QueryHandler(BaseHandler):
             snippet = self._load_content_snippet(company_id, f)
             doc_entries.append(f"{title} (path: {f})\nSnippet: {snippet}")
         docs_str = "\n\n".join(doc_entries)
-        prompt = f"Given the user's query: '{query}' and this list of documents with titles, paths, and content snippets:\n{docs_str}\n\nSelect up to 10 most relevant file paths based on content relevance, synonyms (e.g., 'leave' as vacation/time off/benefits), and misspellings. Prioritize personal docs if matching. Always include all partial matches for thoroughness. Output only the paths, one per line, no explanations."
+        prompt = f"Given the user's query: '{query}' and this list of documents with titles, paths, and content snippets:\n{docs_str}\n\nSelect up to 10 most relevant file paths based on content relevance, synonyms (e.g., 'leave' as vacation/time off/benefits), and misspellings. Prioritize personal docs if matching. Include ALL files with ANY relevance, even indirect or partial. Output only the paths, one per line, no explanations."
         headers = {"Authorization": f"Bearer {GROK_API_KEY}", "Content-Type": "application/json"}
         payload = {
             "model": GROK_MODEL,
@@ -110,11 +110,8 @@ class QueryHandler(BaseHandler):
             self._send_feedback(sender_id, company_id)
             return
         concat_content = "\n\n".join(contents)
-        prompt = f"Based on the following documents (prioritize personal docs if any):\n{concat_content}\n\nAnswer the user's query: {query}. List documents 1 to N from most to least relevant, with relevance rating (High/Medium/Low). Give concise AI-generated summary of each, highlighting key sections with **bold** for important parts. Include where to find info in each document. Translate complex terms to plain English. Keep friendly/direct, no intro fluff. Provide actionable insights if possible, be thorough in extracting all relevant rules."
-        headers = {
-            "Authorization": f"Bearer {GROK_API_KEY}",
-            "Content-Type": "application/json"
-        }
+        prompt = f"Based on the following documents (prioritize personal docs if any):\n{concat_content}\n\nAnswer the user's query: {query}. List documents 1 to N from most to least relevant, with relevance rating (High/Medium/Low). Give concise AI-generated summary of each (2-3 sentences max), highlighting key sections with **bold** for important parts. Include where to find info in each document. Translate complex terms to plain English. Keep friendly/direct, no intro fluff. Provide actionable insights if possible, be thorough in extracting all relevant rules."
+        headers = {"Authorization": f"Bearer {GROK_API_KEY}", "Content-Type": "application/json"}
         payload = {
             "model": GROK_MODEL,
             "messages": [
