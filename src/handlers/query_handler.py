@@ -117,7 +117,7 @@ class QueryHandler(BaseHandler):
             self._send_feedback(sender_id, company_id)
             return
         concat_content = "\n\n".join(contents)
-        prompt = f"Based on the following documents (prioritize personal docs if any):\n{concat_content}\n\nAnswer the user's query: {query}. Provide one comprehensive friendly explanation. For each relevant document, summarize its key sections related to the query with **bold highlights** for important parts. Translate any legal or complex terms into plain English. List summaries per document before the overall answer."
+        prompt = f"Based on the following documents (prioritize personal docs if any):\n{concat_content}\n\nAnswer the user's query: {query}. Give a concise AI-generated summary of all matching documents, highlighting key sections with **bold** for important parts. Include where to find info in each document. Translate complex terms to plain English. Keep it friendly and direct, no intro fluff."
         headers = {
             "Authorization": f"Bearer {GROK_API_KEY}",
             "Content-Type": "application/json"
