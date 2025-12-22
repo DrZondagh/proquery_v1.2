@@ -37,8 +37,8 @@ class FeedbackHandler(BaseHandler):
             pending = get_pending_feedback(sender_id, company_id)
             if not pending:
                 return False
-            comment = text.strip().lower()
-            if comment != 'skip':
+            comment = text.strip()
+            if comment.lower() != 'skip':
                 pending['comment'] = text
                 set_pending_feedback(sender_id, company_id, pending)
             send_feedback_email(sender_id, False, pending['query'], pending['answer'], pending.get('comment'))
