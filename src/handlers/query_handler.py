@@ -29,6 +29,18 @@ class QueryHandler(BaseHandler):
         filename = filepath.split('/')[-1].replace('.json', '').replace('_', ' ').replace('-', ' ').strip()
         filename = re.sub(r'^(jake_zondagh_|sop-[a-z]+-\d+_)', '', filename.lower())
         return filename
+    def _load_content_snippet(self, company_id: str, filepath: str) -> str:
+        client = get_s3_client()
+        if not client:
+            return ""
+        try:
+            obj = client.get_object(Bucket=S3_BUCKET_NAME, Key=filepath)
+            data = json.loads(obj['Body'].read().decode('utf-8'))
+            content = data.get('content', '')
+            return content[:300]  # Short snippet to avoid token limits
+        except Exception as e:
+            logger.error(f"Error loading snippet {filepath}: {e}")
+            return ""
     def _load_content(self, company_id: str, filepath: str) -> str:
         client = get_s3_client()
         if not client:
@@ -44,15 +56,24 @@ class QueryHandler(BaseHandler):
         except Exception as e:
             logger.error(f"Error loading content {filepath}: {e}")
             return ""
-    def _find_relevant_files(self, sender_id: str, company_id: str, query: str, only_sops: bool = False) -> list[str]:
+    def _find_relevant_files(self, sender_id: str, company_id: str, query: str, only_sops: bool = False, mode: str = 'basic') -> list[str]:
         personal_files = self._get_personal_files(sender_id, company_id) if not only_sops else []
         sop_files = self._get_global_sop_files(company_id)
         all_files = personal_files + sop_files
         if not all_files:
             return []
-        titles = [self._get_clean_title(f) + f" (path: {f})" for f in all_files] # Include path for uniqueness
-        titles_str = "\n".join(titles)
-        prompt = f"Given the user's query: '{query}' and this list of document titles and paths:\n{titles_str}\n\nSelect up to 10 most relevant file paths, prioritizing any that match keywords or semantics. Output only the paths, one per line, no explanations."
+        if mode == 'basic':
+            titles = [self._get_clean_title(f) + f" (path: {f})" for f in all_files]
+            titles_str = "\n".join(titles)
+            prompt = f"Given the user's query: '{query}' and this list of document titles and paths:\n{titles_str}\n\nSelect up to 10 most relevant file paths, prioritizing any that match keywords or semantics. Output only the paths, one per line, no explanations."
+        else:  # advanced
+            doc_entries = []
+            for f in all_files:
+                title = self._get_clean_title(f)
+                snippet = self._load_content_snippet(company_id, f)
+                doc_entries.append(f"{title} (path: {f})\nSnippet: {snippet}")
+            docs_str = "\n\n".join(doc_entries)
+            prompt = f"Given the user's query: '{query}' and this list of documents with titles, paths, and content snippets:\n{docs_str}\n\nSelect up to 10 most relevant file paths based on content relevance, prioritizing personal docs if matching. Output only the paths, one per line, no explanations."
         headers = {"Authorization": f"Bearer {GROK_API_KEY}", "Content-Type": "application/json"}
         payload = {
             "model": "grok-3-mini",
@@ -71,8 +92,11 @@ class QueryHandler(BaseHandler):
             logger.error(f"Grok API call for matching failed: {e}")
             return []
     def _process_query(self, sender_id: str, company_id: str, query: str, only_sops: bool = False):
+        # Determine mode based on role or company (for client pay tiers); default advanced for robustness
+        _, role, _, _ = get_user_info(sender_id)  # From db_handler
+        mode = 'advanced' if role in ['ceo', 'hr_head'] else 'basic'  # Example: advanced for premium roles
         send_whatsapp_text(sender_id, "ProQuery's Neural Network Engaged. Incoming 🚀")
-        matched_files = self._find_relevant_files(sender_id, company_id, query, only_sops)
+        matched_files = self._find_relevant_files(sender_id, company_id, query, only_sops, mode=mode)
         if not matched_files:
             answer = "No relevant documents found. Try rephrasing your question."
             send_whatsapp_text(sender_id, answer)
