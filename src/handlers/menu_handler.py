@@ -5,6 +5,8 @@ from src.core.base_handler import BaseHandler
 from src.core.whatsapp_handler import send_whatsapp_text, send_whatsapp_buttons
 from src.core.db_handler import update_bot_state, get_bot_state
 from src.core.logger import logger
+
+
 class MenuHandler(BaseHandler):
     priority = 100 # Highest priority - greets and main menu always take precedence
     def _is_greeting(self, text: str) -> bool:
@@ -64,9 +66,6 @@ class MenuHandler(BaseHandler):
             return True
         if button_id == "apps_btn":
             self._send_apps_menu(sender_id, company_id)
-            return True
-        if button_id == "hr_btn":
-            send_whatsapp_text(sender_id, "Talk to HR coming soon!")
             return True
         if button_id == "leave_btn":
             send_whatsapp_text(sender_id, "Take Leave coming soon! 🌴")
