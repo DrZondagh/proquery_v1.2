@@ -5,7 +5,7 @@ from src.core.db_handler import get_bot_state, update_bot_state, log_user_query
 from src.core.email_handler import send_hr_email
 from src.core.logger import logger
 class HrContactHandler(BaseHandler):
-    priority = 60  # Between query (70) and feedback (50)
+    priority = 75  # Higher than query (70) to process context-specific text first
     def try_process_interactive(self, sender_id: str, company_id: str, interactive_data: dict) -> bool:
         if interactive_data.get('type') != 'button_reply':
             return False
