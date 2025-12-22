@@ -81,7 +81,7 @@ class QueryHandler(BaseHandler):
                     score = len(common)
                     if score == 0:
                         fuzzy_score = difflib.SequenceMatcher(None, query.lower(), title.lower() + snippet.lower()).ratio()
-                        if fuzzy_score > 0.5:  # Lower threshold for more matches
+                        if fuzzy_score > 0.4:  # Lowered for more matches
                             score = 1
                     if 'employees' in f:
                         score += 5
@@ -117,13 +117,15 @@ class QueryHandler(BaseHandler):
             if response.status_code == 200:
                 answer = response.json()['choices'][0]['message']['content'].strip()
                 selected_paths = [line.strip() for line in answer.split('\n') if line.strip() and any(f.endswith(line) for f in all_files)]
+                if len(selected_paths) < 3 and len(pre_filtered) >= 3:
+                    selected_paths = pre_filtered[:3]  # Fallback to top 3 local if Grok gives less
                 return selected_paths
             else:
                 logger.error(f"Grok API error for matching: {response.text}")
-                return []
+                return pre_filtered[:3] if pre_filtered else []
         except Exception as e:
             logger.error(f"Grok API call for matching failed: {e}")
-            return []
+            return pre_filtered[:3] if pre_filtered else []
     def _process_query(self, sender_id: str, company_id: str, query: str, only_sops: bool = False):
         send_whatsapp_text(sender_id, "ProQuery: AI driven efficiency. Incoming 🚀")
         matched_files = self._find_relevant_files(sender_id, company_id, query, only_sops)
@@ -147,7 +149,7 @@ class QueryHandler(BaseHandler):
             self._send_feedback(sender_id, company_id)
             return
         concat_content = "\n\n".join(contents)
-        prompt = f"Based on the following documents (prioritize personal docs if any):\n{concat_content}\n\nAnswer the user's query: {query}. List documents 1 to N from most to least relevant, with relevance rating (High/Medium/Low). Give concise AI-generated summary of each (2-3 sentences max), highlighting key sections with **bold** for important parts. Include where to find info in each document. Translate complex terms to plain English. Keep friendly/direct, no intro fluff. Provide actionable insights if possible, be thorough in extracting all relevant rules."
+        prompt = f"Based on the following documents (prioritize personal docs if any):\n{concat_content}\n\nAnswer the user's query: {query}. List documents 1 to N from most to least relevant, with relevance rating (High/Medium/Low). Give concise AI-generated summary of each (1-2 sentences max), highlighting key sections with **bold** for important parts. Include where to find info in each document. Translate complex terms to plain English. Keep friendly/direct, no intro fluff. Provide actionable insights if possible, be thorough in extracting all relevant rules."
         headers = {"Authorization": f"Bearer {GROK_API_KEY}", "Content-Type": "application/json"}
         payload = {
             "model": GROK_MODEL,
