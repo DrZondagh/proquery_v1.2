@@ -76,7 +76,7 @@ class QueryHandler(BaseHandler):
             prompt = f"Given the user's query: '{query}' and this list of documents with titles, paths, and content snippets:\n{docs_str}\n\nSelect up to 10 most relevant file paths based on content relevance, prioritizing personal docs if matching. Output only the paths, one per line, no explanations."
         headers = {"Authorization": f"Bearer {GROK_API_KEY}", "Content-Type": "application/json"}
         payload = {
-            "model": "grok-3-mini",
+            "model": "grok-beta",
             "messages": [{"role": "user", "content": prompt}]
         }
         try:
@@ -123,7 +123,7 @@ class QueryHandler(BaseHandler):
             "Content-Type": "application/json"
         }
         payload = {
-            "model": "grok-3-mini",
+            "model": "grok-beta",
             "messages": [
                 {"role": "system", "content": "You are a helpful HR assistant answering based on company and personal documents."},
                 {"role": "user", "content": prompt}
