@@ -8,7 +8,6 @@ from src.core.s3_handler import get_pdf_url
 from src.core.db_handler import get_s3_client, get_bot_state, update_bot_state, set_pending_feedback, get_user_info
 from src.core.config import S3_BUCKET_NAME, GROK_API_KEY, GROK_MODEL
 from src.core.logger import logger
-import time
 class QueryHandler(BaseHandler):
     priority = 70
     def _get_personal_files(self, sender_id: str, company_id: str) -> list[str]:
@@ -140,18 +139,15 @@ class QueryHandler(BaseHandler):
             send_whatsapp_text(sender_id, answer)
             logger.error(f"Grok API call failed: {e}")
             set_pending_feedback(sender_id, company_id, {'query': query, 'answer': answer})
+        # Send all relevant PDFs after the summary
         for file in matched_files:
             pdf_file = file.replace('.json', '.pdf')
             url = get_pdf_url(pdf_file)
             if url:
                 filename = pdf_file.split('/')[-1]
-                send_whatsapp_text(sender_id, f"Sending full document: {self._get_clean_title(pdf_file).capitalize()}")
-                success = send_whatsapp_pdf(sender_id, url, filename, caption="Full Document")
-                time.sleep(2)
+                success = send_whatsapp_pdf(sender_id, url, filename, caption=self._get_clean_title(pdf_file).capitalize())
                 if not success:
                     send_whatsapp_text(sender_id, "Error sending PDF.")
-            else:
-                send_whatsapp_text(sender_id, "PDF not found for this document.")
         self._clear_context(sender_id, company_id)
         self._send_feedback(sender_id, company_id)
     def _send_feedback(self, sender_id: str, company_id: str):
@@ -182,5 +178,6 @@ class QueryHandler(BaseHandler):
             only_sops = (context == 'sop_query')
             self._process_query(sender_id, company_id, text, only_sops=only_sops)
             return True
+        # For unhandled text, treat as general query (since priority low, higher handlers missed it)
         self._process_query(sender_id, company_id, text)
         return True
