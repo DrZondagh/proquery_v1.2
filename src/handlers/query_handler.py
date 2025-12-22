@@ -51,7 +51,7 @@ class QueryHandler(BaseHandler):
             if not isinstance(data, dict):
                 return ""
             content = data.get('content', '')
-            return content[:1000]  # Increased for deeper context
+            return content[:1000]
         except Exception as e:
             logger.error(f"Error loading snippet {filepath}: {e}")
             return ""
@@ -81,7 +81,7 @@ class QueryHandler(BaseHandler):
                     score = len(common)
                     if score == 0:
                         fuzzy_score = difflib.SequenceMatcher(None, query.lower(), title.lower() + snippet.lower()).ratio()
-                        if fuzzy_score > 0.6:
+                        if fuzzy_score > 0.5:  # Lower threshold for more matches
                             score = 1
                     if 'employees' in f:
                         score += 5
@@ -90,7 +90,7 @@ class QueryHandler(BaseHandler):
                 except Exception:
                     pass
         scores.sort(reverse=True)
-        return [f for score, f in scores[:20]]
+        return [f for score, f in scores]
     def _find_relevant_files(self, sender_id: str, company_id: str, query: str, only_sops: bool = False) -> list[str]:
         personal_files = self._get_personal_files(sender_id, company_id) if not only_sops else []
         sop_files = self._get_global_sop_files(company_id)
@@ -106,7 +106,7 @@ class QueryHandler(BaseHandler):
             snippet = self._load_content_snippet(company_id, f)
             doc_entries.append(f"{title} (path: {f})\nSnippet: {snippet}")
         docs_str = "\n\n".join(doc_entries)
-        prompt = f"Given the user's query: '{query}' and this list of documents with titles, paths, and content snippets:\n{docs_str}\n\nSelect up to 10 most relevant file paths based on content relevance, synonyms (e.g., 'leave' as vacation/time off/benefits), and misspellings. Prioritize personal docs if matching. Include ALL files with ANY relevance, even indirect or partial. Output only the paths, one per line, no explanations."
+        prompt = f"Given the user's query: '{query}' and this list of documents with titles, paths, and content snippets:\n{docs_str}\n\nSelect at least 3 most relevant file paths if any relevance (up to 10), based on content relevance, synonyms (e.g., 'leave' as vacation/time off/benefits/absence), and misspellings. Prioritize personal docs if matching. Include ALL files with ANY relevance, even indirect or partial. Output only the paths, one per line, no explanations."
         headers = {"Authorization": f"Bearer {GROK_API_KEY}", "Content-Type": "application/json"}
         payload = {
             "model": GROK_MODEL,
