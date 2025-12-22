@@ -5,7 +5,7 @@ import re
 from src.core.base_handler import BaseHandler
 from src.core.whatsapp_handler import send_whatsapp_text, send_whatsapp_pdf, send_whatsapp_buttons
 from src.core.s3_handler import get_pdf_url
-from src.core.db_handler import get_s3_client, get_bot_state, update_bot_state, set_pending_feedback
+from src.core.db_handler import get_s3_client, get_bot_state, update_bot_state, set_pending_feedback, get_user_info  # Added get_user_info
 from src.core.config import S3_BUCKET_NAME, GROK_API_KEY
 from src.core.logger import logger
 import time # For delay in sending PDFs
