@@ -71,7 +71,7 @@ class QueryHandler(BaseHandler):
             logger.error(f"Grok API call for matching failed: {e}")
             return []
     def _process_query(self, sender_id: str, company_id: str, query: str, only_sops: bool = False):
-        send_whatsapp_text(sender_id, "Neural Nets Engaged. Incoming 🚀")
+        send_whatsapp_text(sender_id, "ProQuery's Neural Network Engaged. Incoming 🚀")
         matched_files = self._find_relevant_files(sender_id, company_id, query, only_sops)
         if not matched_files:
             answer = "No relevant documents found. Try rephrasing your question."
