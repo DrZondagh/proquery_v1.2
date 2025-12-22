@@ -5,19 +5,19 @@ import re
 from src.core.base_handler import BaseHandler
 from src.core.whatsapp_handler import send_whatsapp_text, send_whatsapp_pdf, send_whatsapp_buttons
 from src.core.s3_handler import get_pdf_url
-from src.core.db_handler import get_s3_client, get_bot_state, update_bot_state, set_pending_feedback, get_user_info  # Added get_user_info
-from src.core.config import S3_BUCKET_NAME, GROK_API_KEY
+from src.core.db_handler import get_s3_client, get_bot_state, update_bot_state, set_pending_feedback, get_user_info
+from src.core.config import S3_BUCKET_NAME, GROK_API_KEY, GROK_MODEL
 from src.core.logger import logger
-import time # For delay in sending PDFs
+import time
 class QueryHandler(BaseHandler):
-    priority = 70 # Lower than documents (80) and SOP (90)
+    priority = 70
     def _get_personal_files(self, sender_id: str, company_id: str) -> list[str]:
         client = get_s3_client()
         if not client:
             return []
         prefix = f"{company_id}/employees/{sender_id}/"
         response = client.list_objects_v2(Bucket=S3_BUCKET_NAME, Prefix=prefix)
-        return [obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.json')]
+        return [obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.json') and 'processed_messages.json' not in obj['Key'] and 'queries.json' not in obj['Key']]
     def _get_global_sop_files(self, company_id: str) -> list[str]:
         client = get_s3_client()
         if not client:
@@ -37,9 +37,9 @@ class QueryHandler(BaseHandler):
             obj = client.get_object(Bucket=S3_BUCKET_NAME, Key=filepath)
             data = json.loads(obj['Body'].read().decode('utf-8'))
             if not isinstance(data, dict):
-                return ""  # Skip non-dict JSON like lists
+                return ""
             content = data.get('content', '')
-            return content[:500]  # Increased to 500 for better context
+            return content[:500]
         except Exception as e:
             logger.error(f"Error loading snippet {filepath}: {e}")
             return ""
@@ -58,27 +58,22 @@ class QueryHandler(BaseHandler):
         except Exception as e:
             logger.error(f"Error loading content {filepath}: {e}")
             return ""
-    def _find_relevant_files(self, sender_id: str, company_id: str, query: str, only_sops: bool = False, mode: str = 'basic') -> list[str]:
+    def _find_relevant_files(self, sender_id: str, company_id: str, query: str, only_sops: bool = False) -> list[str]:
         personal_files = self._get_personal_files(sender_id, company_id) if not only_sops else []
         sop_files = self._get_global_sop_files(company_id)
         all_files = personal_files + sop_files
         if not all_files:
             return []
-        if mode == 'basic':
-            titles = [self._get_clean_title(f) + f" (path: {f})" for f in all_files]
-            titles_str = "\n".join(titles)
-            prompt = f"Given the user's query: '{query}' and this list of document titles and paths:\n{titles_str}\n\nSelect up to 10 most relevant file paths, prioritizing any that match keywords or semantics. Output only the paths, one per line, no explanations."
-        else:  # advanced
-            doc_entries = []
-            for f in all_files:
-                title = self._get_clean_title(f)
-                snippet = self._load_content_snippet(company_id, f)
-                doc_entries.append(f"{title} (path: {f})\nSnippet: {snippet}")
-            docs_str = "\n\n".join(doc_entries)
-            prompt = f"Given the user's query: '{query}' and this list of documents with titles, paths, and content snippets:\n{docs_str}\n\nSelect up to 10 most relevant file paths based on content relevance, synonyms (e.g., 'leave' as vacation/time off), and misspellings. Prioritize personal docs if matching. Output only the paths, one per line, no explanations."
+        doc_entries = []
+        for f in all_files:
+            title = self._get_clean_title(f)
+            snippet = self._load_content_snippet(company_id, f)
+            doc_entries.append(f"{title} (path: {f})\nSnippet: {snippet}")
+        docs_str = "\n\n".join(doc_entries)
+        prompt = f"Given the user's query: '{query}' and this list of documents with titles, paths, and content snippets:\n{docs_str}\n\nSelect up to 10 most relevant file paths based on content relevance, synonyms (e.g., 'leave' as vacation/time off), and misspellings. Prioritize personal docs if matching. Always include all partial matches for thoroughness. Output only the paths, one per line, no explanations."
         headers = {"Authorization": f"Bearer {GROK_API_KEY}", "Content-Type": "application/json"}
         payload = {
-            "model": "grok-beta",
+            "model": GROK_MODEL,
             "messages": [{"role": "user", "content": prompt}]
         }
         try:
@@ -94,11 +89,8 @@ class QueryHandler(BaseHandler):
             logger.error(f"Grok API call for matching failed: {e}")
             return []
     def _process_query(self, sender_id: str, company_id: str, query: str, only_sops: bool = False):
-        # Determine mode based on role or company (for client pay tiers); default advanced for robustness
-        _, role, _, _ = get_user_info(sender_id)  # From db_handler
-        mode = 'advanced' if role in ['ceo', 'hr_head'] else 'basic'  # Example: advanced for premium roles
         send_whatsapp_text(sender_id, "ProQuery: AI driven efficiency. Incoming 🚀")
-        matched_files = self._find_relevant_files(sender_id, company_id, query, only_sops, mode=mode)
+        matched_files = self._find_relevant_files(sender_id, company_id, query, only_sops)
         if not matched_files:
             answer = "No relevant documents found. Try rephrasing your question."
             send_whatsapp_text(sender_id, answer)
@@ -125,7 +117,7 @@ class QueryHandler(BaseHandler):
             "Content-Type": "application/json"
         }
         payload = {
-            "model": "grok-beta",
+            "model": GROK_MODEL,
             "messages": [
                 {"role": "system", "content": "You are a helpful HR assistant answering based on company and personal documents."},
                 {"role": "user", "content": prompt}
@@ -148,7 +140,6 @@ class QueryHandler(BaseHandler):
             send_whatsapp_text(sender_id, answer)
             logger.error(f"Grok API call failed: {e}")
             set_pending_feedback(sender_id, company_id, {'query': query, 'answer': answer})
-        # Send all relevant PDFs after the summary
         for file in matched_files:
             pdf_file = file.replace('.json', '.pdf')
             url = get_pdf_url(pdf_file)
@@ -156,7 +147,7 @@ class QueryHandler(BaseHandler):
                 filename = pdf_file.split('/')[-1]
                 send_whatsapp_text(sender_id, f"Sending full document: {self._get_clean_title(pdf_file).capitalize()}")
                 success = send_whatsapp_pdf(sender_id, url, filename, caption="Full Document")
-                time.sleep(2) # Delay for sequencing
+                time.sleep(2)
                 if not success:
                     send_whatsapp_text(sender_id, "Error sending PDF.")
             else:
@@ -191,6 +182,5 @@ class QueryHandler(BaseHandler):
             only_sops = (context == 'sop_query')
             self._process_query(sender_id, company_id, text, only_sops=only_sops)
             return True
-        # For unhandled text, treat as general query (since priority low, higher handlers missed it)
         self._process_query(sender_id, company_id, text)
         return True

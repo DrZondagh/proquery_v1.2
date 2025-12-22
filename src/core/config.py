@@ -7,7 +7,7 @@ REQUIRED_ENVS = [
     "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION", "S3_BUCKET_NAME",
     "WHATSAPP_API_URL", "WHATSAPP_AUTH_TOKEN", "VERIFY_TOKEN_META", "GROK_API_KEY",
     "EMAIL_HOST", "EMAIL_PORT", "EMAIL_USER", "EMAIL_PASSWORD", "BOT_PHONE_NUMBER",
-    "EMAIL_FEEDBACK_TO", "EMAIL_HR_TO"
+    "EMAIL_FEEDBACK_TO", "EMAIL_HR_TO", "GROK_MODEL"
 ]
 # Check and raise early
 missing = [env for env in REQUIRED_ENVS if not os.getenv(env)]
@@ -29,3 +29,4 @@ EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
 BOT_PHONE_NUMBER = os.getenv("BOT_PHONE_NUMBER")
 EMAIL_FEEDBACK_TO = os.getenv("EMAIL_FEEDBACK_TO")
 EMAIL_HR_TO = os.getenv("EMAIL_HR_TO")
+GROK_MODEL = os.getenv("GROK_MODEL", "grok-3-mini")  # Default to grok-3-mini if not set
