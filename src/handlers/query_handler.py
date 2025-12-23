@@ -1,327 +1,67 @@
 # src/handlers/query_handler.py
-import json
-import requests
-import re
-import difflib
-from concurrent.futures import ThreadPoolExecutor, as_completed
+# Updated to combine summaries into one message, remove "Sending PDF..." texts,
+# send PDFs silently at the end in priority order, then send feedback buttons.
+
 from src.core.base_handler import BaseHandler
-from src.core.whatsapp_handler import send_whatsapp_text, send_whatsapp_buttons, send_whatsapp_list
-from src.core.db_handler import get_s3_client, get_bot_state, update_bot_state, set_pending_feedback
-from src.core.config import S3_BUCKET_NAME, GROK_API_KEY, GROK_MODEL
+from src.core.query import process_query
+from src.core.whatsapp_handler import send_whatsapp_text, send_whatsapp_pdf, send_whatsapp_buttons
+from src.core.s3_handler import get_pdf_url
 from src.core.logger import logger
-from src.core.pdf_sender import send_pdf  # New immutable PDF sender
-from botocore.exceptions import ClientError
+import re
+import time
+
 
 class QueryHandler(BaseHandler):
-    priority = 70
-    _cache = {}  # company_id -> {'personal': {sender_id: list}, 'sop': list}
+    priority = 70  # Medium priority
 
-    def _get_personal_files(self, sender_id: str, company_id: str) -> list[str]:
-        if company_id not in self._cache:
-            self._cache[company_id] = {'personal': {}, 'sop': []}
-        if sender_id not in self._cache[company_id]['personal']:
-            client = get_s3_client()
-            if not client:
-                return []
-            prefix = f"{company_id}/employees/{sender_id}/"
-            response = client.list_objects_v2(Bucket=S3_BUCKET_NAME, Prefix=prefix)
-            files = [obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.json') and 'processed_messages.json' not in obj['Key'] and 'queries.json' not in obj['Key'] and 'bot_state.json' not in obj['Key'] and 'user.json' not in obj['Key']]
-            self._cache[company_id]['personal'][sender_id] = files
-        return self._cache[company_id]['personal'][sender_id]
-
-    def _get_global_sop_files(self, company_id: str) -> list[str]:
-        if company_id not in self._cache:
-            self._cache[company_id] = {'personal': {}, 'sop': []}
-        if not self._cache[company_id]['sop']:
-            client = get_s3_client()
-            if not client:
-                return []
-            prefix = f"{company_id}/sops/all/"
-            response = client.list_objects_v2(Bucket=S3_BUCKET_NAME, Prefix=prefix)
-            files = [obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.json')]
-            self._cache[company_id]['sop'] = files
-        return self._cache[company_id]['sop']
-
-    def _get_clean_title(self, filepath: str) -> str:
-        filename = filepath.split('/')[-1].replace('.json', '').replace('_', ' ').replace('-', ' ').strip()
-        filename = re.sub(r'^(jake_zondagh_|sop-[a-z]+-\d+_)', '', filename.lower())
-        return filename.capitalize()
-
-    def _load_content_snippet(self, company_id: str, filepath: str) -> str:
-        client = get_s3_client()
-        if not client:
-            return ""
-        try:
-            obj = client.get_object(Bucket=S3_BUCKET_NAME, Key=filepath)
-            data = json.loads(obj['Body'].read().decode('utf-8'))
-            if not isinstance(data, dict):
-                return ""
-            content = data.get('content', '')
-            return content[:1000]
-        except Exception as e:
-            logger.error(f"Error loading snippet {filepath}: {e}")
-            return ""
-
-    def _load_content(self, company_id: str, filepath: str) -> str:
-        client = get_s3_client()
-        if not client:
-            return ""
-        try:
-            obj = client.get_object(Bucket=S3_BUCKET_NAME, Key=filepath)
-            data = json.loads(obj['Body'].read().decode('utf-8'))
-            return data.get('content', json.dumps(data))
-        except Exception as e:
-            logger.error(f"Error loading content {filepath}: {e}")
-            return ""
-
-    def _local_pre_filter(self, all_files, query: str, company_id: str) -> list[str]:
-        query_words = set(re.findall(r'\w+', query.lower()))
-        scores = []
-        with ThreadPoolExecutor(max_workers=10) as executor:
-            future_to_file = {executor.submit(self._load_content_snippet, company_id, f): f for f in all_files}
-            for future in as_completed(future_to_file):
-                f = future_to_file[future]
-                try:
-                    snippet = future.result()
-                    title = self._get_clean_title(f)
-                    title_words = set(re.findall(r'\w+', title.lower()))
-                    snippet_words = set(re.findall(r'\w+', snippet.lower()))
-                    common = query_words.intersection(title_words.union(snippet_words))
-                    score = len(common)
-                    if score == 0:
-                        fuzzy_score = max(
-                            difflib.SequenceMatcher(None, query.lower(), title.lower()).ratio(),
-                            difflib.SequenceMatcher(None, query.lower(), snippet.lower()).ratio()
-                        )
-                        if fuzzy_score > 0.6:  # Raised threshold
-                            score = 1
-                    if 'employees' in f:  # Prioritize personal
-                        score += 5
-                    if score >= 2 or (score == 1 and fuzzy_score > 0.6):
-                        scores.append((score, f))
-                except Exception:
-                    pass
-        scores.sort(reverse=True)
-        return [f for score, f in scores[:20]]  # Limit to top 20 for efficiency
-
-    def _is_direct_doc_request(self, text: str) -> str | None:
-        lowered = text.lower().strip()
-        direct_map = {
-            'payslips': '💰 Payslips',
-            'payslip': '💰 Payslips',
-            'benefits guide': '📌 Benefits Guide',
-            'benefits': '📌 Benefits Guide',
-            'employee handbook': '📖 Employee Handbook',
-            'handbook': '📖 Employee Handbook',
-            'performance reviews': '⭐ Performance Reviews',
-            'reviews': '⭐ Performance Reviews',
-            'job description': '📋 Job Description',
-            'warnings': '⚠️ Warning Letters',
-            'warning letters': '⚠️ Warning Letters'
-        }
-        # Fuzzy match first
-        matches = difflib.get_close_matches(lowered, list(direct_map.keys()), n=1, cutoff=0.7)
-        if matches:
-            return direct_map[matches[0]]
-        # Exact checks
-        for key, cat in direct_map.items():
-            if lowered == key or lowered.startswith(key + ' '):
-                return cat
-        return None
-
-    def _find_relevant_files(self, sender_id: str, company_id: str, query: str, only_sops: bool = False) -> list[str]:
-        personal_files = self._get_personal_files(sender_id, company_id) if not only_sops else []
-        sop_files = self._get_global_sop_files(company_id)
-        all_files = personal_files + sop_files
-        if not all_files:
-            return []
-        pre_filtered = self._local_pre_filter(all_files, query, company_id)
-        if not pre_filtered:
-            return []
-        doc_entries = []
-        for f in pre_filtered:
-            title = self._get_clean_title(f)
-            snippet = self._load_content_snippet(company_id, f)
-            doc_entries.append(f"Title: {title}\nPath: {f}\nSnippet: {snippet}")
-        docs_str = "\n\n".join(doc_entries)
-        prompt = f"User query: '{query}'\nDocuments (titles, paths, snippets):\n{docs_str}\n\nSelect ONLY files with HIGH direct relevance where content explicitly addresses the query (confidence >80%). Exclude tangential/indirect/partial matches, e.g., don't select leave docs for payslip queries unless directly mentioning pay. Consider semantics/synonyms/misspellings. Prioritize personal. Output ONLY paths, one per line, or nothing if no high matches."
-        headers = {"Authorization": f"Bearer {GROK_API_KEY}", "Content-Type": "application/json"}
-        payload = {"model": GROK_MODEL, "messages": [{"role": "user", "content": prompt}]}
-        try:
-            response = requests.post("https://api.x.ai/v1/chat/completions", headers=headers, json=payload)
-            if response.status_code == 200:
-                answer = response.json()['choices'][0]['message']['content'].strip()
-                selected_paths = [line.strip() for line in answer.split('\n') if line.strip() and any(line in f for f in all_files)]
-                if len(selected_paths) < 1 and len(pre_filtered) >= 1:
-                    selected_paths = pre_filtered[:3]  # Fallback minimal
-            else:
-                logger.error(f"Grok error: {response.text}")
-                selected_paths = pre_filtered[:5] if pre_filtered else []
-        except Exception as e:
-            logger.error(f"Grok call failed: {e}")
-            selected_paths = pre_filtered[:5] if pre_filtered else []
-        # Filter only those with existing PDF
-        client = get_s3_client()
-        existing = []
-        for f in selected_paths:
-            pdf = f.replace('.json', '.pdf')
-            try:
-                client.head_object(Bucket=S3_BUCKET_NAME, Key=pdf)
-                existing.append(f)
-            except ClientError as e:
-                if e.response['Error']['Code'] != '404':
-                    logger.error(f"Head error for {pdf}: {e}")
-        return existing
-
-    def _get_summaries(self, sender_id: str, company_id: str, matched_files: list[str], query: str) -> str:
-        if not matched_files:
-            return "No relevant documents found."
-        summaries = []
-        with ThreadPoolExecutor(max_workers=5) as executor:
-            future_to_file = {executor.submit(self._load_content, company_id, f): f for f in matched_files}
-            contents = {}
-            for future in as_completed(future_to_file):
-                f = future_to_file[future]
-                try:
-                    contents[f] = future.result()
-                except:
-                    contents[f] = ""
-        for i, f in enumerate(matched_files, 1):
-            content = contents.get(f, "")
-            if not content:
-                continue
-            title = self._get_clean_title(f)
-            prompt = f"Document: {title}\nContent: {content}\n\nQuery: {query}\n\nOutput: Relevance (High/Medium/Low based on direct match). Plain English summary (1-2 sentences, simple for blue-collar workers). Key sections with **bold** highlights. Actionable insights if any. Format: {i}. {title} - Relevance: [level]\nSummary: [text]\nSections: [list]"
-            headers = {"Authorization": f"Bearer {GROK_API_KEY}", "Content-Type": "application/json"}
-            payload = {"model": GROK_MODEL, "messages": [{"role": "user", "content": prompt}]}
-            try:
-                response = requests.post("https://api.x.ai/v1/chat/completions", headers=headers, json=payload)
-                if response.status_code == 200:
-                    summary = response.json()['choices'][0]['message']['content'].strip()
-                    summaries.append(summary)
-            except Exception as e:
-                logger.error(f"Summary failed for {f}: {e}")
-                summaries.append(f"{i}. {title} - Relevance: Medium\nSummary: Content loading error. Check document manually.")
-        return "\n\n".join(summaries) if summaries else "Error generating summaries."
-
-    def _send_pdf_selection_list(self, sender_id: str, company_id: str, files: list[str]):
-        sections = [{"title": "Select PDF(s)", "rows": []}]
-        for f in files:
-            title = self._get_clean_title(f)[:24]
-            sections[0]["rows"].append({
-                "id": f"pdf_select_{f}",
-                "title": title,
-                "description": "Download this"
-            })
-        if len(files) > 1:
-            sections[0]["rows"].append({
-                "id": "pdf_all",
-                "title": "Download All",
-                "description": "Get every PDF"
-            })
-        success = send_whatsapp_list(
-            sender_id,
-            header="Download PDFs",
-            body="Choose which to download:",
-            footer="Or type 'menu'",
-            sections=sections
-        )
-        if success:
-            logger.info(f"PDF selection list sent to {sender_id}")
-
-    def _process_query(self, sender_id: str, company_id: str, query: str, only_sops: bool = False):
-        try:
-            logger.info(f"Processing query: {query}")
-            send_whatsapp_text(sender_id, "Searching documents... 🚀")
-            matched_files = self._find_relevant_files(sender_id, company_id, query, only_sops)
-            logger.info(f"Matched files: {matched_files}")
-            if not matched_files:
-                answer = "No matches. Try rephrasing or check 'Documents' menu."
-                send_whatsapp_text(sender_id, answer)
-                set_pending_feedback(sender_id, company_id, {'query': query, 'answer': answer})
-                self._send_feedback(sender_id, company_id)
-                self._clear_context(sender_id, company_id)
-                return
-            answer = self._get_summaries(sender_id, company_id, matched_files, query)
-            logger.info(f"Summaries: {answer}")
-            if answer:
-                send_whatsapp_text(sender_id, answer)
-            else:
-                answer = "Error summarizing. Proceeding to documents."
-                send_whatsapp_text(sender_id, answer)
-            set_pending_feedback(sender_id, company_id, {'query': query, 'answer': answer})
-            if len(matched_files) == 1:
-                caption = self._get_clean_title(matched_files[0])
-                send_pdf(sender_id, company_id, matched_files[0], caption)
-                self._send_feedback(sender_id, company_id)
-            elif len(matched_files) > 1:
-                state = get_bot_state(sender_id, company_id)
-                state['matched_files'] = matched_files
-                update_bot_state(sender_id, company_id, state)
-                self._send_pdf_selection_list(sender_id, company_id, matched_files)
-                # Context remains for interactive, no feedback yet
-            self._clear_context(sender_id, company_id)  # If single or none
-        except Exception as e:
-            logger.error(f"Error in _process_query: {e}")
-            send_whatsapp_text(sender_id, "Error processing query. Try again.")
-            self._clear_context(sender_id, company_id)
-
-    def _send_feedback(self, sender_id: str, company_id: str):
+    def _send_feedback(self, sender_id: str):
         buttons = [
             {"type": "reply", "reply": {"id": "feedback_yes", "title": "Yes 👍"}},
             {"type": "reply", "reply": {"id": "feedback_no", "title": "No 👎"}},
-            {"type": "reply", "reply": {"id": "main_menu_btn", "title": "Main Menu ↩️"}}
+            {"type": "reply", "reply": {"id": "main_menu_btn", "title": "Back to Menu ↩️"}}
         ]
-        success = send_whatsapp_buttons(sender_id, "Was this helpful?", buttons)
+        text = "Was this helpful?"
+        success = send_whatsapp_buttons(sender_id, text, buttons)
         if success:
-            logger.info(f"Feedback sent to {sender_id}")
-
-    def _clear_context(self, sender_id: str, company_id: str):
-        state = get_bot_state(sender_id, company_id)
-        if 'context' in state:
-            del state['context']
-        if 'matched_files' in state:
-            del state['matched_files']
-        update_bot_state(sender_id, company_id, state)
-
-    def try_process_interactive(self, sender_id: str, company_id: str, interactive_data: dict) -> bool:
-        state = get_bot_state(sender_id, company_id)
-        if 'matched_files' not in state:
-            return False
-        if interactive_data.get('type') == 'list_reply':
-            reply_id = interactive_data['list_reply']['id']
-            if reply_id.startswith('pdf_select_'):
-                file = reply_id[11:]
-                if file in state['matched_files']:
-                    caption = self._get_clean_title(file)
-                    send_pdf(sender_id, company_id, file, caption)
-                    self._send_feedback(sender_id, company_id)
-                    self._clear_context(sender_id, company_id)
-                    return True
-            elif reply_id == 'pdf_all':
-                sent_count = 0
-                for file in state['matched_files']:
-                    caption = self._get_clean_title(file)
-                    if send_pdf(sender_id, company_id, file, caption):
-                        sent_count += 1
-                if sent_count == 0:
-                    send_whatsapp_text(sender_id, "No PDFs sent. Contact HR.")
-                self._send_feedback(sender_id, company_id)
-                self._clear_context(sender_id, company_id)
-                return True
-        return False
+            logger.info(f"Feedback buttons sent to {sender_id}")
 
     def try_process_text(self, sender_id: str, company_id: str, text: str) -> bool:
-        state = get_bot_state(sender_id, company_id)
-        if state.get('context') == 'feedback_comment':
-            return False
-        direct_cat = self._is_direct_doc_request(text)
-        if direct_cat:
-            from src.handlers.documents_handler import DocumentsHandler
-            dh = DocumentsHandler()
-            dh._send_documents_by_type(sender_id, company_id, direct_cat)
+        # Check if this is a general query (not handled by other specific handlers)
+        # For example, if text doesn't match greetings, docs, etc.
+        summaries, error = process_query(company_id, sender_id, text)
+        if error:
+            send_whatsapp_text(sender_id, error)
+            self._send_feedback(sender_id)
             return True
-        context = state.get('context')
-        only_sops = (context == 'sop_query')
-        self._process_query(sender_id, company_id, text, only_sops)
+
+        # Combine all summaries into one message
+        combined_summary = "\n\n".join(summary for summary, _ in summaries)
+        send_whatsapp_text(sender_id, combined_summary)
+
+        # Collect and send PDFs in priority order (same as summaries)
+        for _, f in summaries:  # summaries is list of (summary, f)
+            # Main PDF
+            pdf_key = f.replace('.json', '.pdf')
+            pdf_url = get_pdf_url(pdf_key)
+            if pdf_url:
+                filename = pdf_key.split('/')[-1]
+                send_whatsapp_pdf(sender_id, pdf_url, filename, caption="Relevant PDF")
+                time.sleep(1)  # Slight delay to ensure order
+
+            # Parse summary for mentioned SOPs/docs and send those
+            mentioned_docs = re.findall(r'SOP-[A-Z0-9-]+', combined_summary)  # Parse from combined to catch all
+            for doc in set(mentioned_docs):
+                pdf_key = f"{company_id}/sops/all/{doc}.pdf"  # Adjust naming as needed
+                pdf_url = get_pdf_url(pdf_key)
+                if pdf_url:
+                    filename = pdf_key.split('/')[-1]
+                    send_whatsapp_pdf(sender_id, pdf_url, filename, caption=f"Mentioned: {doc}")
+                    time.sleep(1)
+
+        # Send feedback buttons after all PDFs
+        self._send_feedback(sender_id)
         return True
+
+    def try_process_interactive(self, sender_id: str, company_id: str, interactive_data: dict) -> bool:
+        # If any interactive for queries, handle here
+        return False
