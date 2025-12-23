@@ -192,7 +192,7 @@ class DocumentsHandler(BaseHandler):
         elif int_type == 'list_reply':
             reply_id = interactive_data['list_reply']['id']
             if reply_id == 'doc_policies':
-                send_whatsapp_text(sender_id, "Query like 'recruitment policy' for details!")
+                send_whatsapp_text(sender_id, "Search something like 'recruitment policy', 'Code of conduct', or 'IT security' for details!")
                 state = get_bot_state(sender_id, company_id)
                 state['context'] = 'sop_query'
                 update_bot_state(sender_id, company_id, state)
