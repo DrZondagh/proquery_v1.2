@@ -5,11 +5,12 @@ import re
 import difflib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from src.core.base_handler import BaseHandler
-from src.core.whatsapp_handler import send_whatsapp_text, send_whatsapp_buttons
+from src.core.whatsapp_handler import send_whatsapp_text, send_whatsapp_buttons, send_whatsapp_list
 from src.core.db_handler import get_s3_client, get_bot_state, update_bot_state, set_pending_feedback
 from src.core.config import S3_BUCKET_NAME, GROK_API_KEY, GROK_MODEL
 from src.core.logger import logger
 from src.core.pdf_sender import send_pdf  # New immutable PDF sender
+from botocore.exceptions import ClientError
 
 class QueryHandler(BaseHandler):
     priority = 70
@@ -92,11 +93,11 @@ class QueryHandler(BaseHandler):
                             difflib.SequenceMatcher(None, query.lower(), title.lower()).ratio(),
                             difflib.SequenceMatcher(None, query.lower(), snippet.lower()).ratio()
                         )
-                        if fuzzy_score > 0.3:  # Lower threshold for broader matches
+                        if fuzzy_score > 0.6:  # Raised threshold
                             score = 1
                     if 'employees' in f:  # Prioritize personal
                         score += 5
-                    if score > 0:
+                    if score >= 2 or (score == 1 and fuzzy_score > 0.6):
                         scores.append((score, f))
                 except Exception:
                     pass
@@ -118,6 +119,11 @@ class QueryHandler(BaseHandler):
             'warnings': '⚠️ Warning Letters',
             'warning letters': '⚠️ Warning Letters'
         }
+        # Fuzzy match first
+        matches = difflib.get_close_matches(lowered, list(direct_map.keys()), n=1, cutoff=0.7)
+        if matches:
+            return direct_map[matches[0]]
+        # Exact checks
         for key, cat in direct_map.items():
             if lowered == key or lowered.startswith(key + ' '):
                 return cat
@@ -138,7 +144,7 @@ class QueryHandler(BaseHandler):
             snippet = self._load_content_snippet(company_id, f)
             doc_entries.append(f"Title: {title}\nPath: {f}\nSnippet: {snippet}")
         docs_str = "\n\n".join(doc_entries)
-        prompt = f"User query: '{query}'\nDocuments (titles, paths, snippets):\n{docs_str}\n\nSelect ALL relevant files (at least 3 if possible, up to 15). Consider semantics, synonyms (e.g., 'leave' = vacation/absence/benefits/time off), misspellings (e.g., 'polciy' = policy), indirect relevance. Prioritize personal files. Output ONLY paths, one per line."
+        prompt = f"User query: '{query}'\nDocuments (titles, paths, snippets):\n{docs_str}\n\nSelect ONLY files with HIGH direct relevance where content explicitly addresses the query (confidence >80%). Exclude tangential/indirect/partial matches, e.g., don't select leave docs for payslip queries unless directly mentioning pay. Consider semantics/synonyms/misspellings. Prioritize personal. Output ONLY paths, one per line, or nothing if no high matches."
         headers = {"Authorization": f"Bearer {GROK_API_KEY}", "Content-Type": "application/json"}
         payload = {"model": GROK_MODEL, "messages": [{"role": "user", "content": prompt}]}
         try:
@@ -146,15 +152,26 @@ class QueryHandler(BaseHandler):
             if response.status_code == 200:
                 answer = response.json()['choices'][0]['message']['content'].strip()
                 selected_paths = [line.strip() for line in answer.split('\n') if line.strip() and any(line in f for f in all_files)]
-                if len(selected_paths) < 3 and len(pre_filtered) >= 3:
-                    selected_paths = pre_filtered[:3]
-                return selected_paths
+                if len(selected_paths) < 1 and len(pre_filtered) >= 1:
+                    selected_paths = pre_filtered[:3]  # Fallback minimal
             else:
                 logger.error(f"Grok error: {response.text}")
-                return pre_filtered[:5] if pre_filtered else []
+                selected_paths = pre_filtered[:5] if pre_filtered else []
         except Exception as e:
             logger.error(f"Grok call failed: {e}")
-            return pre_filtered[:5] if pre_filtered else []
+            selected_paths = pre_filtered[:5] if pre_filtered else []
+        # Filter only those with existing PDF
+        client = get_s3_client()
+        existing = []
+        for f in selected_paths:
+            pdf = f.replace('.json', '.pdf')
+            try:
+                client.head_object(Bucket=S3_BUCKET_NAME, Key=pdf)
+                existing.append(f)
+            except ClientError as e:
+                if e.response['Error']['Code'] != '404':
+                    logger.error(f"Head error for {pdf}: {e}")
+        return existing
 
     def _get_summaries(self, sender_id: str, company_id: str, matched_files: list[str], query: str) -> str:
         if not matched_files:
@@ -174,7 +191,7 @@ class QueryHandler(BaseHandler):
             if not content:
                 continue
             title = self._get_clean_title(f)
-            prompt = f"Document: {title}\nContent: {content}\n\nQuery: {query}\n\nOutput: Relevance (High/Medium/Low based on match). Plain English summary (1-2 sentences, simple for blue-collar workers). Key sections with **bold** highlights. Actionable insights if any. Format: {i}. {title} - Relevance: [level]\nSummary: [text]\nSections: [list]"
+            prompt = f"Document: {title}\nContent: {content}\n\nQuery: {query}\n\nOutput: Relevance (High/Medium/Low based on direct match). Plain English summary (1-2 sentences, simple for blue-collar workers). Key sections with **bold** highlights. Actionable insights if any. Format: {i}. {title} - Relevance: [level]\nSummary: [text]\nSections: [list]"
             headers = {"Authorization": f"Bearer {GROK_API_KEY}", "Content-Type": "application/json"}
             payload = {"model": GROK_MODEL, "messages": [{"role": "user", "content": prompt}]}
             try:
@@ -187,32 +204,67 @@ class QueryHandler(BaseHandler):
                 summaries.append(f"{i}. {title} - Relevance: Medium\nSummary: Content loading error. Check document manually.")
         return "\n\n".join(summaries) if summaries else "Error generating summaries."
 
+    def _send_pdf_selection_list(self, sender_id: str, company_id: str, files: list[str]):
+        sections = [{"title": "Select PDF(s)", "rows": []}]
+        for f in files:
+            title = self._get_clean_title(f)[:24]
+            sections[0]["rows"].append({
+                "id": f"pdf_select_{f}",
+                "title": title,
+                "description": "Download this"
+            })
+        if len(files) > 1:
+            sections[0]["rows"].append({
+                "id": "pdf_all",
+                "title": "Download All",
+                "description": "Get every PDF"
+            })
+        success = send_whatsapp_list(
+            sender_id,
+            header="Download PDFs",
+            body="Choose which to download:",
+            footer="Or type 'menu'",
+            sections=sections
+        )
+        if success:
+            logger.info(f"PDF selection list sent to {sender_id}")
+
     def _process_query(self, sender_id: str, company_id: str, query: str, only_sops: bool = False):
-        send_whatsapp_text(sender_id, "Searching documents... 🚀")
-        matched_files = self._find_relevant_files(sender_id, company_id, query, only_sops)
-        if not matched_files:
-            answer = "No matches. Try rephrasing or check 'Documents' menu."
-            send_whatsapp_text(sender_id, answer)
+        try:
+            logger.info(f"Processing query: {query}")
+            send_whatsapp_text(sender_id, "Searching documents... 🚀")
+            matched_files = self._find_relevant_files(sender_id, company_id, query, only_sops)
+            logger.info(f"Matched files: {matched_files}")
+            if not matched_files:
+                answer = "No matches. Try rephrasing or check 'Documents' menu."
+                send_whatsapp_text(sender_id, answer)
+                set_pending_feedback(sender_id, company_id, {'query': query, 'answer': answer})
+                self._send_feedback(sender_id, company_id)
+                self._clear_context(sender_id, company_id)
+                return
+            answer = self._get_summaries(sender_id, company_id, matched_files, query)
+            logger.info(f"Summaries: {answer}")
+            if answer:
+                send_whatsapp_text(sender_id, answer)
+            else:
+                answer = "Error summarizing. Proceeding to documents."
+                send_whatsapp_text(sender_id, answer)
             set_pending_feedback(sender_id, company_id, {'query': query, 'answer': answer})
-            self._send_feedback(sender_id, company_id)
+            if len(matched_files) == 1:
+                caption = self._get_clean_title(matched_files[0])
+                send_pdf(sender_id, company_id, matched_files[0], caption)
+                self._send_feedback(sender_id, company_id)
+            elif len(matched_files) > 1:
+                state = get_bot_state(sender_id, company_id)
+                state['matched_files'] = matched_files
+                update_bot_state(sender_id, company_id, state)
+                self._send_pdf_selection_list(sender_id, company_id, matched_files)
+                # Context remains for interactive, no feedback yet
+            self._clear_context(sender_id, company_id)  # If single or none
+        except Exception as e:
+            logger.error(f"Error in _process_query: {e}")
+            send_whatsapp_text(sender_id, "Error processing query. Try again.")
             self._clear_context(sender_id, company_id)
-            return
-        answer = self._get_summaries(sender_id, company_id, matched_files, query)
-        if answer:
-            send_whatsapp_text(sender_id, answer)
-        else:
-            answer = "Error summarizing. Sending docs anyway."
-            send_whatsapp_text(sender_id, answer)
-        sent_count = 0
-        for file in matched_files:
-            caption = self._get_clean_title(file)
-            if send_pdf(sender_id, company_id, file, caption):
-                sent_count += 1
-        if sent_count == 0:
-            send_whatsapp_text(sender_id, "No PDFs sent. Contact HR.")
-        set_pending_feedback(sender_id, company_id, {'query': query, 'answer': answer})
-        self._send_feedback(sender_id, company_id)
-        self._clear_context(sender_id, company_id)
 
     def _send_feedback(self, sender_id: str, company_id: str):
         buttons = [
@@ -228,9 +280,35 @@ class QueryHandler(BaseHandler):
         state = get_bot_state(sender_id, company_id)
         if 'context' in state:
             del state['context']
-            update_bot_state(sender_id, company_id, state)
+        if 'matched_files' in state:
+            del state['matched_files']
+        update_bot_state(sender_id, company_id, state)
 
     def try_process_interactive(self, sender_id: str, company_id: str, interactive_data: dict) -> bool:
+        state = get_bot_state(sender_id, company_id)
+        if 'matched_files' not in state:
+            return False
+        if interactive_data.get('type') == 'list_reply':
+            reply_id = interactive_data['list_reply']['id']
+            if reply_id.startswith('pdf_select_'):
+                file = reply_id[11:]
+                if file in state['matched_files']:
+                    caption = self._get_clean_title(file)
+                    send_pdf(sender_id, company_id, file, caption)
+                    self._send_feedback(sender_id, company_id)
+                    self._clear_context(sender_id, company_id)
+                    return True
+            elif reply_id == 'pdf_all':
+                sent_count = 0
+                for file in state['matched_files']:
+                    caption = self._get_clean_title(file)
+                    if send_pdf(sender_id, company_id, file, caption):
+                        sent_count += 1
+                if sent_count == 0:
+                    send_whatsapp_text(sender_id, "No PDFs sent. Contact HR.")
+                self._send_feedback(sender_id, company_id)
+                self._clear_context(sender_id, company_id)
+                return True
         return False
 
     def try_process_text(self, sender_id: str, company_id: str, text: str) -> bool:
