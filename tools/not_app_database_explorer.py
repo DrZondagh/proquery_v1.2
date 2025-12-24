@@ -18,18 +18,15 @@ DB_PORT = os.getenv("DB_PORT", "5432")
 AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
 AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
 AWS_REGION = os.getenv("AWS_REGION", "af-south-1")
-S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME")  # Should be 'proquerytest'
+S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME")  # Should be 'proquery-hr'
 
-# PostgreSQL Functions
+
+# PostgreSQL Functions (unchanged)
 def connect_to_postgres():
     """Establishes connection to PostgreSQL using environment variables."""
     try:
         conn = psycopg2.connect(
-            dbname=DB_NAME,
-            user=DB_USER,
-            password=DB_PASSWORD,
-            host=DB_HOST,
-            port=DB_PORT
+            dbname=DB_NAME, user=DB_USER, password=DB_PASSWORD, host=DB_HOST, port=DB_PORT
         )
         print("Successfully connected to PostgreSQL database!")
         return conn
@@ -37,14 +34,13 @@ def connect_to_postgres():
         print(f"Error connecting to PostgreSQL: {e}")
         return None
 
+
 def get_table_list(conn):
     """Fetches all table names from the public schema."""
     try:
         with conn.cursor() as cursor:
             cursor.execute("""
-                SELECT table_name
-                FROM information_schema.tables
-                WHERE table_schema = 'public';
+                SELECT table_name FROM information_schema.tables WHERE table_schema = 'public';
             """)
             tables = [row[0] for row in cursor.fetchall()]
             return tables
@@ -52,13 +48,13 @@ def get_table_list(conn):
         print(f"Error fetching table list: {e}")
         return []
 
+
 def get_table_structure(conn, table_name):
     """Fetches column names and data types for a given table."""
     try:
         with conn.cursor() as cursor:
             cursor.execute("""
-                SELECT column_name, data_type
-                FROM information_schema.columns
+                SELECT column_name, data_type FROM information_schema.columns
                 WHERE table_name = %s AND table_schema = 'public';
             """, (table_name,))
             structure = cursor.fetchall()
@@ -66,6 +62,7 @@ def get_table_structure(conn, table_name):
     except Exception as e:
         print(f"Error fetching structure for table {table_name}: {e}")
         return []
+
 
 def get_postgres_sample_data(conn, table_name, limit=5):
     """Fetches up to 5 sample rows from a given PostgreSQL table."""
@@ -80,7 +77,8 @@ def get_postgres_sample_data(conn, table_name, limit=5):
         print(f"Error fetching sample data for table {table_name}: {e}")
         return []
 
-# S3 Functions
+
+# S3 Functions (Modified for Full Recursive Listing)
 def connect_to_s3():
     """Establishes connection to AWS S3 using environment variables or AWS CLI config."""
     try:
@@ -99,25 +97,44 @@ def connect_to_s3():
         print(f"Error connecting to AWS S3: {e}")
         return None
 
-def get_s3_sample_data(s3_client, bucket_name, prefix, limit=2):
-    """Fetches up to 2 sample objects from a specific prefix in an S3 bucket."""
-    try:
-        response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=prefix, MaxKeys=limit)
-        if 'Contents' not in response:
-            return []
-        objects = [
-            {'Key': obj['Key'], 'Size': obj['Size'], 'LastModified': obj['LastModified']}
-            for obj in response['Contents']
-        ]
-        return objects
-    except Exception as e:
-        print(f"Error fetching sample data for prefix '{prefix}' in bucket {bucket_name}: {e}")
-        return []
 
-# Main Exploration Function
+def list_all_s3_objects(s3_client, bucket_name, prefix=''):
+    """Recursively lists all objects and prefixes in the S3 bucket starting from the given prefix."""
+    try:
+        paginator = s3_client.get_paginator('list_objects_v2')
+        page_iterator = paginator.paginate(Bucket=bucket_name, Prefix=prefix)
+
+        all_objects = []
+        all_prefixes = set()
+
+        for page in page_iterator:
+            if 'CommonPrefixes' in page:
+                for common_prefix in page['CommonPrefixes']:
+                    all_prefixes.add(common_prefix['Prefix'])
+            if 'Contents' in page:
+                for obj in page['Contents']:
+                    all_objects.append({
+                        'Key': obj['Key'],
+                        'Size': obj['Size'],
+                        'LastModified': obj['LastModified']
+                    })
+
+        # Recurse into sub-prefixes
+        for sub_prefix in all_prefixes:
+            sub_objects, sub_prefixes = list_all_s3_objects(s3_client, bucket_name, sub_prefix)
+            all_objects.extend(sub_objects)
+            all_prefixes.update(sub_prefixes)
+
+        return all_objects, all_prefixes
+    except Exception as e:
+        print(f"Error listing S3 objects for prefix '{prefix}' in bucket {bucket_name}: {e}")
+        return [], set()
+
+
+# Main Exploration Function (Updated to Use Full S3 Listing)
 def explore_databases():
     """Explores both PostgreSQL and S3 databases with clear structure."""
-    # PostgreSQL Exploration
+    # PostgreSQL Exploration (unchanged)
     print("\n=== Exploring PostgreSQL Database ===")
     conn = connect_to_postgres()
     if conn:
@@ -144,29 +161,27 @@ def explore_databases():
                 print()
         conn.close()
 
-    # S3 Exploration
+    # S3 Exploration (Now Full Recursive)
     print("\n=== Exploring AWS S3 Storage ===")
     s3_client = connect_to_s3()
     if not s3_client or not S3_BUCKET_NAME:
         print("Cannot explore S3: Missing connection or S3_BUCKET_NAME in .env.")
         return
-
     print(f"Bucket: {S3_BUCKET_NAME}")
-    print("Structure:")
-    print("  - Prefix: MediTest/")
-    sub_prefixes = ['MediTest/HR_Documents/', 'MediTest/SOPs/']
-    print(f"    Sub-Prefixes: {sub_prefixes}\n")
 
-    for sub_prefix in sub_prefixes:
-        print(f"    - Sub-Prefix: {sub_prefix}")
-        sample_data = get_s3_sample_data(s3_client, S3_BUCKET_NAME, sub_prefix)
-        if sample_data:
-            print("      Sample Objects (2 examples):")
-            for i, obj in enumerate(sample_data, 1):
-                print(f"        Object {i}: {json.dumps(obj, indent=4, default=str)}")
-        else:
-            print("      No objects retrieved for this sub-prefix.")
-        print()
+    # Start from root or specific prefix (e.g., 'MediTest/')
+    root_prefix = 'MediTest/'  # Adjust if needed; '' for full bucket
+    all_objects, all_prefixes = list_all_s3_objects(s3_client, S3_BUCKET_NAME, root_prefix)
+
+    print("Full Structure:")
+    print(f" - Prefixes Found: {sorted(all_prefixes)}")
+    if all_objects:
+        print(" - All Objects:")
+        for obj in all_objects:
+            print(f"   - Key: {obj['Key']}, Size: {obj['Size']}, LastModified: {obj['LastModified']}")
+    else:
+        print(" - No objects found under the prefix.")
+
 
 if __name__ == "__main__":
     explore_databases()
