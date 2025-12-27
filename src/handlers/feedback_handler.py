@@ -4,7 +4,8 @@ from src.core.db_handler import get_pending_feedback, set_pending_feedback, clea
 from src.core.whatsapp_handler import send_whatsapp_text
 from src.core.email_handler import send_feedback_email
 from src.core.logger import logger
-from src.handlers.menu_handler import MenuHandler  # Import to call _send_main_menu
+
+
 class FeedbackHandler(BaseHandler):
     priority = 50 # Low priority, as fallback for feedback buttons
     def try_process_interactive(self, sender_id: str, company_id: str, interactive_data: dict) -> bool:
@@ -32,6 +33,8 @@ class FeedbackHandler(BaseHandler):
                 update_bot_state(sender_id, company_id, state)
                 return True
         return False
+
+
     def try_process_text(self, sender_id: str, company_id: str, text: str) -> bool:
         state = get_bot_state(sender_id, company_id)
         if state.get('context') == 'feedback_comment':
@@ -43,11 +46,10 @@ class FeedbackHandler(BaseHandler):
                 pending['comment'] = text
                 set_pending_feedback(sender_id, company_id, pending)
             send_feedback_email(sender_id, pending['helpful'], pending['query'], pending['answer'], pending.get('comment'))
-            send_whatsapp_text(sender_id, "Feedback noted. Thanks!")
+            send_whatsapp_text(sender_id, "Thank you for the Feedback. Type 'Hi' for main menu.")
             clear_pending_feedback(sender_id, company_id)
             if 'context' in state:
                 del state['context']
             update_bot_state(sender_id, company_id, state)
-            MenuHandler()._send_main_menu(sender_id, company_id)  # Auto-send main menu after feedback
             return True
         return False

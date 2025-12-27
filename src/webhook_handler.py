@@ -43,55 +43,49 @@ def process_incoming_message(data: dict) -> bool:
     except (KeyError, IndexError):
         logger.error("Invalid webhook payload structure")
         return False
-
     # Ignore if from bot's number
     if sender_id == BOT_PHONE_NUMBER:
         logger.info(f"Ignoring message from bot: {message_id}")
         return True
-
     # Validate sender_id
     if not validate_sender_id(sender_id):
         logger.warning(f"Invalid sender_id: {sender_id}")
         return False
-
     # Get user info
     company_id, role, person_name, password_hash = get_user_info(sender_id)
     if not company_id:
         send_whatsapp_text(sender_id, "Unauthorized access. Please contact HR.")
         return False
-
     # Check duplicates
     if is_message_processed(sender_id, message_id, company_id):
         logger.info(f"Duplicate message ignored: {message_id}")
         return True
     mark_message_processed(sender_id, message_id, company_id)
-
-    # Rate limit for text messages (3s now, was 5s)
+    # Rate limit for text messages (5s cooldown to prevent ghosts from rapid retries)
     if msg_type == 'text':
         last_time = get_last_response_time(sender_id, company_id)
-        if last_time and (datetime.now() - last_time) < timedelta(seconds=3):
+        if last_time and (datetime.now() - last_time) < timedelta(seconds=5):
             logger.warning(f"Rate limit hit for {sender_id}")
             return False
         update_last_response_time(sender_id, company_id)
-
     # Discover and sort handlers
     handlers = discover_handlers()
-
     # Process based on type
     handled = False
     if msg_type == 'interactive':
         interactive_data = message['interactive']  # button_reply or list_reply
         for handler in handlers:
-            if handler.try_process_interactive(sender_id, company_id, interactive_data):
-                handled = True
-                break
+            if handler.check_context(sender_id, company_id, msg_type, interactive_data):
+                if handler.try_process_interactive(sender_id, company_id, interactive_data):
+                    handled = True
+                    break
     elif msg_type == 'text':
         text = message['text']['body']
         for handler in handlers:
-            if handler.try_process_text(sender_id, company_id, text):
-                handled = True
-                break
-
+            if handler.check_context(sender_id, company_id, msg_type, text):
+                if handler.try_process_text(sender_id, company_id, text):
+                    handled = True
+                    break
     if not handled:
         send_whatsapp_text(sender_id, "Sorry, I didn't understand that. Try saying 'Hi' for the menu!")
     return handled
