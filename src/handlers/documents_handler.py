@@ -10,6 +10,7 @@ from datetime import datetime
 import time
 from src.core.pdf_sender import send_pdf  # Updated import
 
+
 class DocumentsHandler(BaseHandler):
     priority = 80
 
@@ -32,7 +33,6 @@ class DocumentsHandler(BaseHandler):
             return {}
         finally:
             conn.close()
-
         categorized = {
             '📋 Job Description': [],
             '💰 Payslips': [],
@@ -63,32 +63,115 @@ class DocumentsHandler(BaseHandler):
 
     def _sort_files_by_date(self, files):
         def extract_date(filename):
-            match = re.search(r'(\bjan\b|\bfeb\b|\bmar\b|\bapr\b|\bmay\b|\bjun\b|\bjul\b|\baug\b|\bsep\b|\boct\b|\bnov\b|\bdec\b|january|february|march|april|may|june|july|august|september|october|november|december)[\s_-]*(\d{4})?', filename.lower())
+            match = re.search(
+                r'(\bjan\b|\bfeb\b|\bmar\b|\bapr\b|\bmay\b|\bjun\b|\bjul\b|\baug\b|\bsep\b|\boct\b|\bnov\b|\bdec\b|january|february|march|april|may|june|july|august|september|october|november|december)[\s_-]*(\d{4})?',
+                filename.lower())
             if match:
                 month_str = match.group(1)[:3]
                 year = match.group(2) or str(datetime.now().year)
-                month_map = {'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'may': 5, 'jun': 6, 'jul': 7, 'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12}
+                month_map = {'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'may': 5, 'jun': 6, 'jul': 7, 'aug': 8, 'sep': 9,
+                             'oct': 10, 'nov': 11, 'dec': 12}
                 month = month_map.get(month_str, 1)
                 return datetime(int(year), month, 1)
             return datetime.min
+
         return sorted(files, key=lambda f: extract_date(f.split('/')[-1]), reverse=True)
 
     def _get_nice_label(self, filename: str, category: str) -> str:
-        base = filename.replace('.pdf', '').replace('jake_zondagh_', '', 1).replace('_', ' ').strip()[:24]
-        if 'payslip' in category.lower():
-            match = re.search(r'(\bjan\b|\bfeb\b|\bmar\b|\bapr\b|\bmay\b|\bjun\b|\bjul\b|\baug\b|\bsep\b|\boct\b|\bnov\b|\bdec\b|january|february|march|april|may|june|july|august|september|october|november|december)[\s_-]*(\d{4})?', filename.lower())
+        """
+        Generate a clean, short title (max ~24 chars) for WhatsApp list rows.
+        Prioritizes date extraction, then document type hints, then filename shortening.
+        """
+        base = filename.replace('.pdf', '').strip()
+
+        # Remove common prefix (e.g. employee name)
+        base = re.sub(r'^[A-Za-z\s]+_[A-Za-z\s]+_', '', base)  # e.g. Jake_Zondagh_...
+        base = base.replace('_', ' ').strip()
+
+        # 1. Payslips - try to extract month + year
+        if 'payslip' in category.lower() or 'payslip' in base.lower():
+            match = re.search(
+                r'(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|january|february|march|april|may|june|july|august|september|october|november|december)\s*[-/]?\s*(\d{4})?',
+                base.lower()
+            )
             if match:
                 month_str = match.group(1)[:3].capitalize()
                 year = match.group(2) or str(datetime.now().year)
                 return f"{month_str} {year}"
-        elif 'review' in category.lower() or 'performance' in category.lower():
-            match = re.search(r'(q[1-4])[\s_-]*(\d{4})?', filename.lower())
+
+        # 2. Performance Reviews / Quarterly reviews
+        if 'review' in category.lower() or 'performance' in category.lower():
+            # Look for Q1/Q2/Q3/Q4 or numbers like 2025 Q2
+            match = re.search(r'(q[1-4]|quarter\s*[1-4])\s*[-/]?\s*(\d{4})?', base.lower())
             if match:
-                quarter = match.group(1).upper()
+                quarter = match.group(1).upper().replace('QUARTER ', 'Q')
                 year = match.group(2) or str(datetime.now().year)
-                return f"{quarter} {year} Review"
-            return base
-        return base.capitalize()
+                return f"{quarter} {year}"
+
+            # Fallback: look for year only
+            year_match = re.search(r'\b(20\d{2})\b', base)
+            if year_match:
+                return f"Review {year_match.group(1)}"
+
+        # 3. Warning Letters - try to extract number or date
+        if 'warning' in category.lower():
+            # Look for "Warning 1", "Warning Letter 2", etc.
+            num_match = re.search(r'(letter\s*)?(\d+|[IVXL]+)\b', base.lower())
+            if num_match:
+                num = num_match.group(2).upper()
+                return f"Warning {num}"
+
+            # Try date
+            date_match = re.search(r'(\d{4})[.-]?(\d{1,2})?[.-]?(\d{1,2})?', base)
+            if date_match:
+                year = date_match.group(1)
+                month = date_match.group(2)
+                if month:
+                    month_str = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][
+                        int(month) - 1]
+                    return f"Warning {month_str} {year}"
+                return f"Warning {year}"
+
+        # 4. Job Description, Handbook, Benefits - usually static, just nice name
+        if 'job' in category.lower():
+            return "Job Description"
+        if 'handbook' in category.lower():
+            return "Employee Handbook"
+        if 'benefits' in category.lower():
+            return "Benefits Guide"
+
+        # 5. SOPs / Policies (company-wide) - try to keep main topic
+        if 'sop' in base.lower() or 'policy' in base.lower():
+            # Try to extract code like SOP-HR-001 or just main topic
+            code_match = re.search(r'(sop|policy)[-\s]*([a-zA-Z0-9-]+)', base.lower())
+            if code_match:
+                code = code_match.group(2).upper()
+                return f"SOP {code[:8]}"  # e.g. SOP HR-001
+
+            # Fallback: take first few words
+            words = base.split()
+            short = ' '.join(words[:3])
+            return short[:24].strip().title()
+
+        # 6. Generic fallback: smart truncation
+        # Remove employee name prefix if still present
+        base = re.sub(r'^[A-Za-z\s]+(?:\s+-\s*)?', '', base).strip()
+
+        # Take meaningful parts
+        parts = base.split()
+        if len(parts) >= 2:
+            # Try keeping first two words + last if looks like date/number
+            candidate = f"{parts[0]} {parts[1]}"
+            if len(candidate) <= 20 and (parts[-1].isdigit() or re.match(r'\d{4}', parts[-1])):
+                candidate += f" {parts[-1]}"
+            if len(candidate) <= 24:
+                return candidate.title()
+
+        # Ultimate fallback: just truncate with ellipsis if needed
+        title = base.title()[:21]
+        if len(base) > 21:
+            title += "…"
+        return title.strip()
 
     def _send_documents_menu(self, sender_id: str, company_id: str):
         categorized = self._get_user_documents(sender_id, company_id)
@@ -142,7 +225,7 @@ class DocumentsHandler(BaseHandler):
         short_type = text_parts
         for i in range(0, len(files), chunk_size):
             chunk = files[i:i + chunk_size]
-            section_title = f"{short_type} ({i+1}-{i+len(chunk)})" if len(files) > chunk_size else short_type
+            section_title = f"{short_type} ({i + 1}-{i + len(chunk)})" if len(files) > chunk_size else short_type
             section = {"title": section_title, "rows": []}
             for file in chunk:
                 row_id = f"doc_file_{file.split('/')[-1]}"
@@ -190,7 +273,8 @@ class DocumentsHandler(BaseHandler):
         elif int_type == 'list_reply':
             reply_id = interactive_data['list_reply']['id']
             if reply_id == 'doc_policies':
-                send_whatsapp_text(sender_id, "Search something like 'recruitment policy', 'Code of conduct', or 'IT security' for details!")
+                send_whatsapp_text(sender_id,
+                                   "Search something like 'recruitment policy', 'Code of conduct', or 'IT security' for details!")
                 state = get_bot_state(sender_id, company_id)
                 state['context'] = 'sop_query'
                 update_bot_state(sender_id, company_id, state)
