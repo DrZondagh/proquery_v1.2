@@ -11,6 +11,7 @@ from src.core.db_handler import (
 from src.core.whatsapp_handler import send_whatsapp_text
 from src.core.logger import logger
 from src.core.config import BOT_PHONE_NUMBER
+from src.handlers.menu_handler import MenuHandler  # Added import
 
 def discover_handlers():
     handlers_dir = os.path.join(os.path.dirname(__file__), 'handlers')
@@ -87,5 +88,7 @@ def process_incoming_message(data: dict) -> bool:
                     handled = True
                     break
     if not handled:
-        send_whatsapp_text(sender_id, "Sorry, I didn't understand that. Try saying 'Hi' for the menu!")
+        send_whatsapp_text(sender_id, "Couldn't interpret your message, perhaps have a look at the main menu below.")
+        mh = MenuHandler()
+        mh._send_main_menu(sender_id, company_id)
     return handled
