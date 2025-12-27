@@ -1,91 +1,45 @@
-# src/webhook_handler.py
-import os
-import importlib
-import inspect
-from datetime import datetime, timedelta
+# src/handlers/query_handler.py
 from src.core.base_handler import BaseHandler
-from src.core.db_handler import (
-    validate_sender_id, is_message_processed, mark_message_processed,
-    get_last_response_time, update_last_response_time, get_user_info
-)
-from src.core.whatsapp_handler import send_whatsapp_text
+from src.core.whatsapp_handler import send_whatsapp_text, send_whatsapp_buttons
+from src.core.db_handler import get_bot_state, update_bot_state, set_pending_feedback, log_user_query
+from src.core.query import process_query
 from src.core.logger import logger
-from src.core.config import BOT_PHONE_NUMBER
 
-def discover_handlers():
-    handlers_dir = os.path.join(os.path.dirname(__file__), 'handlers')
-    handlers = []
-    if os.path.exists(handlers_dir):
-        for filename in os.listdir(handlers_dir):
-            if filename.endswith('.py') and not filename.startswith('__'):
-                module_name = filename[:-3]
-                module = importlib.import_module(f'src.handlers.{module_name}')
-                for name, obj in inspect.getmembers(module):
-                    if inspect.isclass(obj) and issubclass(obj, BaseHandler) and obj != BaseHandler:
-                        handlers.append(obj())
-    handlers.sort(key=lambda h: h.priority, reverse=True)  # Higher priority first
-    return handlers
+class QueryHandler(BaseHandler):
+    priority = 40  # Lower priority to act as fallback
 
-def process_incoming_message(data: dict) -> bool:
-    # Extract relevant fields from WhatsApp webhook payload
-    try:
-        entry = data['entry'][0]
-        change = entry['changes'][0]
-        value = change['value']
-        if 'messages' not in value:
-            # Skip status updates (sent/delivered/read) silently
-            return True
-        message = value['messages'][0]
-        sender_id = message['from']
-        message_id = message['id']
-        msg_type = message['type']
-        timestamp = datetime.fromtimestamp(int(message['timestamp']))
-    except (KeyError, IndexError):
-        logger.error("Invalid webhook payload structure")
+    def try_process_interactive(self, sender_id: str, company_id: str, interactive_data: dict) -> bool:
         return False
-    # Ignore if from bot's number
-    if sender_id == BOT_PHONE_NUMBER:
-        logger.info(f"Ignoring message from bot: {message_id}")
-        return True
-    # Validate sender_id
-    if not validate_sender_id(sender_id):
-        logger.warning(f"Invalid sender_id: {sender_id}")
-        return False
-    # Get user info
-    company_id, role, person_name, password_hash = get_user_info(sender_id)
-    if not company_id:
-        send_whatsapp_text(sender_id, "Unauthorized access. Please contact HR.")
-        return False
-    # Check duplicates
-    if is_message_processed(sender_id, message_id, company_id):
-        logger.info(f"Duplicate message ignored: {message_id}")
-        return True
-    mark_message_processed(sender_id, message_id, company_id)
-    # Rate limit for text messages (5s cooldown to prevent ghosts from rapid retries)
-    if msg_type == 'text':
-        last_time = get_last_response_time(sender_id, company_id)
-        if last_time and (datetime.now() - last_time) < timedelta(seconds=5):
-            logger.warning(f"Rate limit hit for {sender_id}")
+
+    def try_process_text(self, sender_id: str, company_id: str, text: str) -> bool:
+        state = get_bot_state(sender_id, company_id)
+        if state.get('context') in ['feedback_comment', 'hr_query']:
             return False
-        update_last_response_time(sender_id, company_id)
-    # Discover and sort handlers
-    handlers = discover_handlers()
-    # Process based on type
-    handled = False
-    if msg_type == 'interactive':
-        interactive_data = message['interactive']  # button_reply or list_reply
-        for handler in handlers:
-            if handler.check_context(sender_id, company_id, msg_type, interactive_data):
-                if handler.try_process_interactive(sender_id, company_id, interactive_data):
-                    handled = True
-                    break
-    elif msg_type == 'text':
-        text = message['text']['body']
-        for handler in handlers:
-            if handler.check_context(sender_id, company_id, msg_type, text):
-                if handler.try_process_text(sender_id, company_id, text):
-                    handled = True
-                    break
-    if not handled:
-        send_whatsapp_text(sender_id, "Sorry, I didn't understand that. Try saying 'Hi' for the menu!")
-    return handled
+        # Process as query if reached here (not handled by higher priority)
+        summaries, error = process_query(company_id, sender_id, text)
+        if error:
+            send_whatsapp_text(sender_id, error)
+            log_user_query(sender_id, text, error, company_id)
+            return True
+        full_answer = ""
+        for summary, f in summaries:
+            send_whatsapp_text(sender_id, summary)
+            full_answer += summary + "\n\n"
+        set_pending_feedback(sender_id, company_id, {'query': text, 'answer': full_answer})
+        self._send_feedback(sender_id)
+        log_user_query(sender_id, text, full_answer, company_id)
+        if state.get('context') == 'sop_query':
+            del state['context']
+            update_bot_state(sender_id, company_id, state)
+        return True
+
+    def _send_feedback(self, sender_id: str):
+        buttons = [
+            {"type": "reply", "reply": {"id": "feedback_yes", "title": "Yes 👍"}},
+            {"type": "reply", "reply": {"id": "feedback_no", "title": "No 👎"}},
+            {"type": "reply", "reply": {"id": "main_menu_btn", "title": "Back to Menu ↩️"}}
+        ]
+        text = "Was this helpful?"
+        success = send_whatsapp_buttons(sender_id, text, buttons)
+        if success:
+            logger.info(f"Feedback buttons sent to {sender_id}")

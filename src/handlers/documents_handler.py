@@ -2,23 +2,37 @@
 from src.core.base_handler import BaseHandler
 from src.core.whatsapp_handler import send_whatsapp_list, send_whatsapp_pdf, send_whatsapp_text, send_whatsapp_buttons
 from src.core.s3_handler import get_pdf_url
-from src.core.db_handler import get_s3_client, set_pending_feedback, get_bot_state, update_bot_state
+from src.core.db_handler import get_pg_conn, get_user_id, set_pending_feedback, get_bot_state, update_bot_state
 from src.core.config import S3_BUCKET_NAME
 from src.core.logger import logger
 import re
 from datetime import datetime
 import time
+from src.core.pdf_sender import send_pdf  # Updated import
 
 class DocumentsHandler(BaseHandler):
     priority = 80
 
     def _get_user_documents(self, sender_id: str, company_id: str):
-        client = get_s3_client()
-        if not client:
+        user_id = get_user_id(sender_id)
+        conn = get_pg_conn()
+        if not conn:
             return {}
-        prefix = f"{company_id}/employees/{sender_id}/"
-        response = client.list_objects_v2(Bucket=S3_BUCKET_NAME, Prefix=prefix)
-        files = [obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.pdf')]
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT s3_key, doc_type FROM documents WHERE company_id = %s AND user_id = %s",
+                    (company_id, user_id)
+                )
+                rows = cur.fetchall()
+                files = [row[0] for row in rows]
+                doc_types = [row[1] for row in rows]
+        except Exception as e:
+            logger.error(f"Error fetching user documents: {e}")
+            return {}
+        finally:
+            conn.close()
+
         categorized = {
             '📋 Job Description': [],
             '💰 Payslips': [],
@@ -28,19 +42,20 @@ class DocumentsHandler(BaseHandler):
             '⚠️ Warning Letters': [],
             'Other': []
         }
-        for file in files:
+        for i, file in enumerate(files):
+            doc_type_str = doc_types[i].lower() if doc_types[i] else ''
             filename = file.split('/')[-1].lower()
-            if 'job_description' in filename or 'jobdescription' in filename:
+            if 'job_description' in doc_type_str or 'jobdescription' in filename:
                 categorized['📋 Job Description'].append(file)
-            elif 'payslip' in filename:
+            elif 'payslip' in doc_type_str or 'payslip' in filename:
                 categorized['💰 Payslips'].append(file)
-            elif 'handbook' in filename:
+            elif 'handbook' in doc_type_str or 'handbook' in filename:
                 categorized['📖 Employee Handbook'].append(file)
-            elif 'review' in filename or 'performance' in filename:
+            elif 'review' in doc_type_str or 'performance' in filename:
                 categorized['⭐ Performance Reviews'].append(file)
-            elif 'benefits' in filename or 'benefit' in filename:
+            elif 'benefits' in doc_type_str or 'benefit' in filename:
                 categorized['📌 Benefits Guide'].append(file)
-            elif 'warning' in filename:
+            elif 'warning' in doc_type_str or 'warning' in filename:
                 categorized['⚠️ Warning Letters'].append(file)
             else:
                 categorized['Other'].append(file)
@@ -119,8 +134,7 @@ class DocumentsHandler(BaseHandler):
             self._send_feedback(sender_id, company_id)
             return
         if len(files) == 1:
-            filename = files[0].split('/')[-1]
-            self._send_document(sender_id, company_id, filename)
+            self._send_document(sender_id, company_id, files[0])
             return
         sections = []
         chunk_size = 10
@@ -131,9 +145,8 @@ class DocumentsHandler(BaseHandler):
             section_title = f"{short_type} ({i+1}-{i+len(chunk)})" if len(files) > chunk_size else short_type
             section = {"title": section_title, "rows": []}
             for file in chunk:
-                filename = file.split('/')[-1]
-                row_id = f"doc_file_{filename}"
-                nice_label = self._get_nice_label(filename, doc_type)
+                row_id = f"doc_file_{file.split('/')[-1]}"
+                nice_label = self._get_nice_label(file.split('/')[-1], doc_type)
                 section["rows"].append({
                     "id": row_id,
                     "title": nice_label,
@@ -150,25 +163,10 @@ class DocumentsHandler(BaseHandler):
         if success:
             logger.info(f"{doc_type} list sent to {sender_id}")
 
-    def _send_document(self, sender_id: str, company_id: str, filename: str):
-        key = f"{company_id}/employees/{sender_id}/{filename}"
-        url = get_pdf_url(key)
-        answer = f"Sent {filename}"
-        if url:
-            send_whatsapp_text(sender_id, f"Sending your {filename.replace('.pdf', '')}...")
-            success = send_whatsapp_pdf(sender_id, url, filename, caption=f"Your {filename}")
-            if success:
-                logger.info(f"Sent PDF {filename} to {sender_id}")
-            else:
-                logger.error(f"Failed to send PDF {filename} to {sender_id}")
-                send_whatsapp_text(sender_id, "Error sending file. Try again.")
-                answer = "Error sending file. Try again."
-            time.sleep(2)
-        else:
-            error_msg = "File not found. Contact HR."
-            send_whatsapp_text(sender_id, error_msg)
-            answer = error_msg
-        set_pending_feedback(sender_id, company_id, {'query': f"Requested {filename}", 'answer': answer})
+    def _send_document(self, sender_id: str, company_id: str, s3_key: str):
+        answer = f"Sent {s3_key.split('/')[-1]}"
+        send_pdf(sender_id, company_id, s3_key)  # Updated call
+        set_pending_feedback(sender_id, company_id, {'query': f"Requested {s3_key.split('/')[-1]}", 'answer': answer})
         self._send_feedback(sender_id, company_id)
 
     def _send_feedback(self, sender_id: str, company_id: str):
@@ -203,7 +201,12 @@ class DocumentsHandler(BaseHandler):
                 return True
             elif reply_id.startswith('doc_file_'):
                 filename = reply_id[9:]
-                self._send_document(sender_id, company_id, filename)
+                # Find full s3_key by filename
+                categorized = self._get_user_documents(sender_id, company_id)
+                all_files = [f for cats in categorized.values() for f in cats]
+                s3_key = next((f for f in all_files if f.split('/')[-1] == filename), None)
+                if s3_key:
+                    self._send_document(sender_id, company_id, s3_key)
                 return True
         return False
 
@@ -239,14 +242,9 @@ class DocumentsHandler(BaseHandler):
                     sent_count = 0
                     sent_files = []
                     for file in filtered:
-                        filename = file.split('/')[-1]
-                        send_whatsapp_text(sender_id, f"Sending your {filename.replace('.pdf', '')}...")
-                        url = get_pdf_url(file)
-                        if url:
-                            send_whatsapp_pdf(sender_id, url, filename, caption=f"Your {filename}")
-                            time.sleep(2)
-                            sent_count += 1
-                            sent_files.append(filename)
+                        send_pdf(sender_id, company_id, file)  # Updated
+                        sent_count += 1
+                        sent_files.append(file.split('/')[-1])
                     answer = f"Sent {sent_count} files: {', '.join(sent_files)}" if sent_count > 0 else "Error sending files."
                     set_pending_feedback(sender_id, company_id, {'query': lowered, 'answer': answer})
                     if sent_count > 0:
